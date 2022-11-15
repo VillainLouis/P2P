@@ -230,7 +230,7 @@ def aggregate_model(local_para, common_config):
         weight=1.0/(len(common_config.comm_neighbors)+1)
         para_delta = torch.zeros_like(local_para)
         for neighbor_name in common_config.comm_neighbors:
-            logger.info("idx: {},".format(neighbor_name))
+            logger.info("Update local model use information from neighbor idx: {},".format(neighbor_name))
             model_delta = common_config.neighbor_paras[neighbor_name] - local_para
             para_delta += weight * model_delta
 
