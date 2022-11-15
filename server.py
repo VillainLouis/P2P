@@ -38,7 +38,7 @@ parser.add_argument('--min_lr', type=float, default=0.001)
 parser.add_argument('--epoch', type=int, default=250)
 parser.add_argument('--momentum', type=float, default=-1)
 parser.add_argument('--weight_decay', type=float, default=0.0)
-parser.add_argument('--data_path', type=str, default='/data/docker/data')
+parser.add_argument('--data_path', type=str, default='/data/jliu/data')
 parser.add_argument('--use_cuda', action="store_false", default=True)
 
 args = parser.parse_args()
@@ -103,7 +103,7 @@ def main():
     #到了这里，worker已经启动了
 
     # Create model instance
-    train_data_partition = partition_data(common_config.dataset_type, common_config.data_pattern)
+    train_data_partition = partition_data(common_config.dataset_type, common_config.data_pattern, worker_num=worker_num)
 
     for worker_idx, worker in enumerate(worker_list):
         worker.config.para = init_para
