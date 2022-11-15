@@ -41,8 +41,8 @@ class CommonConfig:
         self.para = None
         self.data_path = None
         self.neighbor_paras = dict()
-        self.neighbor_info = dict()
-        self.comm_neighbors = None
+        self.neighbor_info = dict() # 存的收到的层拉取信息，即需要发送给对应邻居的层
+        self.comm_neighbors = None # list() comm 通信域中的邻居list, [rank号]
         self.train_loss = None
         self.tag=None
         #这里用来存worker的
