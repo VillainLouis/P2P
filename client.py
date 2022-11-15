@@ -120,7 +120,7 @@ def main():
 
         local_model=common_config.para
         logger.info("\n")
-        logger.info("get begin")
+        logger.info("Sending/getting information to/from its neighbors")
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         tasks = []
@@ -142,11 +142,11 @@ def main():
                 # print("worker send")
                 task = asyncio.ensure_future(send_para(comm, local_para, common_config.comm_neighbors[i], common_config.tag))
                 tasks.append(task)
-        logger.info(len(tasks))
+        # logger.info(len(tasks))
 
         loop.run_until_complete(asyncio.wait(tasks))
         loop.close()
-        logger.info("get end")
+        logger.info("Sending/getting information complete")
 
         local_para = aggregate_model(local_para, common_config)
         torch.nn.utils.vector_to_parameters(local_para, local_model.parameters())
