@@ -118,13 +118,42 @@ def main():
         loop.run_until_complete(asyncio.wait(tasks))
         loop.close()
 
-        local_model=common_config.para
+        # Tell neighbors: Layers needed from corresponding neighbors 
         logger.info("\n")
         logger.info("Sending/getting information to/from its neighbors")
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         tasks = []
+        
+        for i in range(len(common_config.comm_neighbors)):
+            nei_rank=common_config.comm_neighbors[i]
+            logger.info("Client {}'s neighbors:{}".format(rank, common_config.comm_neighbors[i]))
+            if nei_rank > rank:
+                data="from "+str(rank)+ " to "+ str(nei_rank) # data
+                task = asyncio.ensure_future(send_para(comm, data, nei_rank, common_config.tag))
+                tasks.append(task)
+                # print("worker send")
+                task = asyncio.ensure_future(get_info(comm, common_config, nei_rank, common_config.tag))
+                tasks.append(task)
+            else:
+                data="from "+str(rank)+ " to "+ str(nei_rank) # data
+                task = asyncio.ensure_future(get_info(comm, common_config, nei_rank, common_config.tag))
+                tasks.append(task)
+                # print("worker send")
+                task = asyncio.ensure_future(send_para(comm, data, nei_rank, common_config.tag))
+                tasks.append(task)
+        loop.run_until_complete(asyncio.wait(tasks))
+        loop.close()
+        logger.info("Sending/getting information complete")
 
+        
+        # Get parameters: Get layers parameters from neighbors
+        local_model=common_config.para
+        logger.info("\n")
+        logger.info("Sending/getting parameters to/from its neighbors")
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        tasks = []
         local_para=torch.nn.utils.parameters_to_vector(local_model.parameters()).detach()
         for i in range(len(common_config.comm_neighbors)):
             l=len(common_config.comm_neighbors)
@@ -142,12 +171,12 @@ def main():
                 # print("worker send")
                 task = asyncio.ensure_future(send_para(comm, local_para, common_config.comm_neighbors[i], common_config.tag))
                 tasks.append(task)
-        # logger.info(len(tasks))
 
         loop.run_until_complete(asyncio.wait(tasks))
         loop.close()
-        logger.info("Sending/getting information complete")
+        logger.info("Sending/getting parameters complete")
 
+        # Aggregate 
         local_para = aggregate_model(local_para, common_config)
         torch.nn.utils.vector_to_parameters(local_para, local_model.parameters())
         common_config.para=local_model
@@ -165,7 +194,7 @@ def main():
 
         if common_config.tag==common_config.epoch+1:
             break
-    # exit()
+
 
 async def local_training(comm, common_config, train_loader):
     comm_neighbors = await get_data(comm, MASTER_RANK, common_config.tag)
@@ -179,6 +208,10 @@ async def local_training(comm, common_config, train_loader):
     if common_config.tag > 1 and common_config.tag % 1 == 0:
         epoch_lr = max((common_config.decay_rate * epoch_lr, common_config.min_lr))
         common_config.lr = epoch_lr
+    
+
+    logger.info("\n")    
+    logger.info("*" * 75)
     logger.info("epoch-{} lr: {}".format(common_config.tag, epoch_lr))
     if common_config.momentum<0:
         optimizer = optim.SGD(local_model.parameters(), lr=epoch_lr, weight_decay=common_config.weight_decay)
@@ -219,6 +252,12 @@ async def send_para(comm, data, rank, epoch_idx):
     # print("get rank: ", rank)
     await send_data(comm, data, rank, epoch_idx)
 
+async def get_info(comm, common_config, rank, epoch_idx):
+    # print("get_data")
+    logger.info("get_data")
+    logger.info("get rank {}, send rank {}".format(comm.Get_rank(), rank))
+    common_config.neighbor_info[rank] = await get_data(comm, rank, epoch_idx)
+
 async def get_para(comm, common_config, rank, epoch_idx):
     # print("get_data")
     logger.info("get_data")
@@ -236,6 +275,12 @@ def aggregate_model(local_para, common_config):
 
         local_para += para_delta
     return local_para
+
+def aggregate_model_layer_wise(common_config, local_model=dict()):
+    # TODO
+    pass
+
+
 
 if __name__ == '__main__':
     main()

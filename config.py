@@ -41,6 +41,7 @@ class CommonConfig:
         self.para = None
         self.data_path = None
         self.neighbor_paras = dict()
+        self.neighbor_info = dict()
         self.comm_neighbors = None
         self.train_loss = None
         self.tag=None
