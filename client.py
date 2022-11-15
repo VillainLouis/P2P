@@ -140,15 +140,15 @@ def main():
         
 
         # Tell neighbors: Layers needed from corresponding neighbors --> 存储在 common_config.neighbor_info=dict()
+                
+        logger.info("Client {}'s neighbors' indices:".format(rank)) # 打印一下邻居的rank号
+        for neighbor_idx in common_config.comm_neighbors:
+            logger.info("\t{}".format(neighbor_idx))
         logger.info("\n")
         logger.info("Sending/getting information to/from its neighbors")
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         tasks = []
-        
-        logger.info("Client {}'s neighbors' indices:".format(rank)) # 打印一下邻居的rank号
-        for neighbor_idx in common_config.comm_neighbors:
-            logger.info("\t{}".format(neighbor_idx))
 
         for i in range(len(common_config.comm_neighbors)):
             nei_rank=common_config.comm_neighbors[i]
@@ -242,7 +242,7 @@ async def local_training(comm, common_config, train_loader):
     
 
     logger.info("\n")    
-    logger.info("*" * 75)
+    logger.info("*" * 100)
     logger.info("epoch-{} lr: {}".format(common_config.tag, epoch_lr))
     if common_config.momentum<0:
         optimizer = optim.SGD(local_model.parameters(), lr=epoch_lr, weight_decay=common_config.weight_decay)
