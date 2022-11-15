@@ -119,6 +119,7 @@ def main():
         loop.close()
 
         local_model=common_config.para
+        logger.info("\n")
         logger.info("get begin")
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -127,7 +128,7 @@ def main():
         local_para=torch.nn.utils.parameters_to_vector(local_model.parameters()).detach()
         for i in range(len(common_config.comm_neighbors)):
             l=len(common_config.comm_neighbors)
-            logger.info("nei:{}".format(common_config.comm_neighbors[i]))
+            logger.info("Client {}'s neighbors:{}".format(rank, common_config.comm_neighbors[i]))
 
             if common_config.comm_neighbors[i] > rank:
                 task = asyncio.ensure_future(send_para(comm, local_para, common_config.comm_neighbors[i], common_config.tag))
