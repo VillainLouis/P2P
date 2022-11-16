@@ -120,6 +120,8 @@ def main():
         loop.close()
 
         # Generate Pulling (layers) information ： 算法的核心就是如何决定层的拉取
+        '''自己的算法，根据模型类型，层的训练速度，邻居信息，层的差异值确定层的拉取信息'''
+        '''输入：model_type, common_config{模型参数等信息}。输出：所有邻居的层拉取信息'''
         layers_needed_dict = dict() # {neighbor_name : list()} 每个邻居名字：[层名字的list]
         for neighbor_idx in common_config.comm_neighbors:
             layers_needed_dict[neighbor_idx] = []
@@ -235,7 +237,7 @@ async def local_training(comm, common_config, train_loader):
     local_model.to(device)
     epoch_lr = common_config.lr
     
-    local_steps = 20
+    local_steps = 50 # 20
     if common_config.tag > 1 and common_config.tag % 1 == 0:
         epoch_lr = max((common_config.decay_rate * epoch_lr, common_config.min_lr))
         common_config.lr = epoch_lr
