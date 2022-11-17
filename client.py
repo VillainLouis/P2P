@@ -121,7 +121,7 @@ def main():
 
         # Generate Pulling (layers) information ： 算法的核心就是如何决定层的拉取
         '''自己的算法，根据模型类型，层的训练速度，邻居信息，层的差异值确定层的拉取信息'''
-        '''输入：model_type, common_config{模型参数等信息}。输出：所有邻居的层拉取信息'''
+        '''generate_layers_information().输入：model_type, common_config{模型参数等信息}。输出：所有邻居的层拉取信息'''
         layers_needed_dict = dict() # {neighbor_name : list()} 每个邻居名字：[层名字的list]
         for neighbor_idx in common_config.comm_neighbors:
             layers_needed_dict[neighbor_idx] = []
@@ -297,17 +297,21 @@ async def get_para(comm, common_config, rank, epoch_idx):
     logger.info("get rank {}, send rank {}".format(comm.Get_rank(), rank))
     common_config.neighbor_paras[rank] = await get_data(comm, rank, epoch_idx)
 
-def aggregate_model(local_para, common_config):
-    with torch.no_grad():
-        weight=1.0/(len(common_config.comm_neighbors)+1)
-        para_delta = torch.zeros_like(local_para)
-        for neighbor_name in common_config.comm_neighbors:
-            logger.info("Update local model use information from neighbor idx: {},".format(neighbor_name))
-            model_delta = common_config.neighbor_paras[neighbor_name] - local_para
-            para_delta += weight * model_delta
+# def aggregate_model(local_para, common_config):
+#     with torch.no_grad():
+#         weight=1.0/(len(common_config.comm_neighbors)+1)
+#         para_delta = torch.zeros_like(local_para)
+#         for neighbor_name in common_config.comm_neighbors:
+#             logger.info("Update local model use information from neighbor idx: {},".format(neighbor_name))
+#             model_delta = common_config.neighbor_paras[neighbor_name] - local_para
+#             para_delta += weight * model_delta
 
-        local_para += para_delta
-    return local_para
+#         local_para += para_delta
+#     return local_para
+
+def generate_layers_information():
+    # TODO
+    pass
 
 def get_layers_dict(model, layers=list()):
     '''
