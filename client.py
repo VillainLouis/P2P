@@ -309,9 +309,27 @@ async def get_para(comm, common_config, rank, epoch_idx):
 #         local_para += para_delta
 #     return local_para
 
-def generate_layers_information():
-    # TODO
+def generate_layers_information(common_config, ):
+    # 1. layer_selector决定拉取的层
+    # 2. peer_selector决定拉取的邻居
+    # 输入：
+
     pass
+
+def layer_selector():
+    # 1. 不同阶段考虑不同的层，根据精度确定训练阶段
+    # 2. 相比于上次更新，层的差异性
+    # 3. 层的学习速度的计算
+    # 4. SVCCA?
+    # 输入：1）之前保存的若干模型参数（设定滑动窗口的大小决定需要考虑之前的几轮更新的模型）
+    #       2）当前的模型测试精度，决定更新的阶段，来决定层的重要性
+    pass
+
+def peer_selector():
+    # 1. 考虑数据分布，计算分布的差异值（是否可以考虑首轮全局通信，每个client保存连通的邻居的分布信息）
+    # 2. 网络。根据上一轮的网络情况，记录下每个邻居的带宽，计算并均一化一个最大值
+    pass
+
 
 def get_layers_dict(model, layers=list()):
     '''
