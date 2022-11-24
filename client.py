@@ -93,8 +93,16 @@ def main():
     common_config.weight_decay = client_config.common_config.weight_decay
     common_config.data_path = client_config.common_config.data_path
     common_config.para=client_config.para
-    
-    common_config.tag = 1
+    common_config.own_distribution=client_config.train_data_idxes
+
+    # 记录层的数量
+    _cnt = 0
+    for _ in common_config.para.named_parameters():
+        _cnt += 1
+    common_config.num_layers = _cnt
+
+    common_config.tag = 1 # 就是epoch数
+
     # init config
     logger.info(str(common_config.__dict__))
 
@@ -119,6 +127,9 @@ def main():
         loop.run_until_complete(asyncio.wait(tasks))
         loop.close()
 
+        # 本地训练完成之后，更新存储older_models的滑动窗口
+        common_config.older_models.add_model(dict(common_config.para))
+
         # Generate Pulling (layers) information ： 算法的核心就是如何决定层的拉取
         '''自己的算法，根据模型类型，层的训练速度，邻居信息，层的差异值确定层的拉取信息'''
         '''generate_layers_information().输入：model_type, common_config{模型参数等信息}。输出：所有邻居的层拉取信息'''
@@ -139,6 +150,17 @@ def main():
         for neighbor_idx in common_config.comm_neighbors:
             layers_needed_dict[neighbor_idx] = whole_model
 
+        # 第一轮传输完整模型
+        # 之后开始做层的选择
+        if common_config.tag == 1:
+            for neighbor_idx in common_config.comm_neighbors:
+                layers_needed_dict[neighbor_idx] = whole_model
+        else:
+            layers_pulling_information = generate_layers_information()
+            for neighbor_idx in common_config.comm_neighbors:
+                for layer in whole_model:
+                    if layers_pulling_information == 1:
+                        layers_needed_dict[neighbor_idx].append(layer) 
         
 
         # Tell neighbors: Layers needed from corresponding neighbors --> 存储在 common_config.neighbor_info=dict()
@@ -229,6 +251,93 @@ def main():
             break
 
 
+def generate_layers_information(common_config, num_peers):
+    # 输入： (全局第一轮通信传输全模型，第二轮开始)
+    #     1. 自己的本地模型
+    #     2. 之前保存的几轮聚合之后的模型，用于计算差异和学习速度 -- 窗口大小确定保存的模型参数个数
+    # 返回一个矩阵：（邻居数量 * 模型层数）
+    # 
+    # TODO 层的选择与邻居的选择，需要一起考虑，不是独立的.
+    #                 2022/11/24：考虑先确定层，再确定client，受限考虑模型的收敛和是否学习到有用的特征，再去确定从那些客户端选择
+    # 
+    def layer_selector(common_config):
+        # 实现想法：
+        #       1. 不同阶段考虑不同的层，根据精度确定训练阶段 -- 暂不考虑
+        #       2. 相比于上次更新，层的差异性
+        #       3. 层的学习速度的计算
+        #           4. SVCCA? -- 后面补充
+        # 输入：1）之前保存的若干模型参数（设定滑动窗口的大小决定需要考虑之前的几轮更新的模型）-- 差异性、学习速度(与自己的模型做对比？)
+        #       2）当前的模型测试精度，决定更新的阶段，来决定层的重要性 -- 暂不考虑
+        #            3）层的SVCCA的值？ -- 后面补充
+        # 返回：
+        
+        # 1) 差异性(与自己的模型做对比？后面可以尝试下与拉取的邻居层的对比)
+        discrepancy = dict()
+        last_model_dict = common_config.older_models.get_last_model_dict()
+        local_model = common_config.para
+        for layer, paras in local_model.named_parameters():
+            discrepancy[layer] = torch.norm(paras - last_model_dict[layer])# 利用二范数计算差异值
+
+        #    层学习速度计算，根据当前窗口，有多少个模型就计算多少个
+        learning_speed = dict()
+        _epsilon = 1e-6
+        for layer, paras in local_model.named_parameters():
+            denominator = 0
+            for i in range(common_config.older_models.size - 1):
+                denominator += torch.norm(common_config.older_models.models[(common_config.older_models.index + i)%common_config.older_models.size] - common_config.older_models.models[(common_config.older_models.index + i + 1)%common_config.older_models.size])
+            molecule = torch.norm(common_config.older_models.models[common_config.index] - common_config.older_models.models[(common_config.index - 1)%common_config.older_models.size])
+            learning_speed[layer] = molecule / (_epsilon + denominator)
+        
+        # 差异和学习速度各占0.5的权重
+        priority = dict()
+        for layer in discrepancy.keys():
+            priority[layer] = discrepancy[layer] * 0.5 + learning_speed[layer] * 0.5
+        return sorted_dict(priority)
+
+
+    def peer_selector(common_config):
+        # 实现想法：
+        #           1. 考虑数据分布，计算分布的差异值（是否可以考虑首轮全局通信，每个client保存连通的邻居的分布信息）
+        #           2. 网络。根据上一轮的网络情况，记录下每个邻居的带宽，计算并均一化一个最大值
+        #           3. 邻居的选择个数？1<=个数<=邻居总数
+        # 实现思路：让每个client进程本地维护：
+        #           1）一个长度为自己邻居大小的dict -- 网络带宽（基于上一轮的收取时间，需要对所有的邻居做一次归一化；
+        #           2）一个长度为自己邻居大小的dict，用于存储邻居的数据分布信息--数据分布的相似度
+        #           3) 1）2）各占0.5的权重，加权的结果按顺序排列，选出指定个数的邻居，并返回指定个数的邻居
+        #          返回一个字典
+        priority = dict()
+        temp_value_for_normalize = 0
+        for neighbor_idx in common_config.comm_neighbors:
+            temp_value_for_normalize += common_config.neighbor_bandwidth[neighbor_idx]
+        for neighbor_idx in common_config.comm_neighbors:
+            priority_bandwidth = (common_config.neighbor_bandwidth[neighbor_idx] / temp_value_for_normalize) # 带宽大的优先
+            priority_distribution = torch.norm(common_config.neighbor_distribution[neighbor_idx], common_config.own_distribution) # 分布差别大的优先
+            priority[neighbor_idx] = priority_bandwidth * 0.5 + priority_distribution * 0.5
+        return sorted_dict(priority)
+
+        
+    def sorted_dict(dict_be_sorted, key=lambda x:x[1], reverse=True): # 默认按键值升序排列
+        dict_be_sorted_by_key = sorted(dict_be_sorted, key)
+        return dict(dict_be_sorted_by_key)
+
+    layers_info = layer_selector(common_config=common_config)
+    neighbor_info = peer_selector(common_config=common_config)
+
+    # 对邻居做选择结果做归一化
+    temp_value_for_normalize = 0
+    for neighbor_idx in neighbor_info:
+        temp_value_for_normalize += neighbor_info[neighbor_idx]
+    for neighbor_idx in neighbor_info:
+        neighbor_info[neighbor_idx] /= temp_value_for_normalize
+    # 根据layer_info和neighbor_info生成选择层的信息
+    result = dict()
+    for neighbor_name in neighbor_info.keys():
+        # 从优先度高的peer拿优先度更高的层，百分比？向上取整 TODO
+        result[neighbor_name] = [layers_info]
+
+
+
+
 async def local_training(comm, common_config, train_loader):
     comm_neighbors = await get_data(comm, MASTER_RANK, common_config.tag)
     # local_model = models.create_model_instance(common_config.dataset_type, common_config.model_type)
@@ -258,6 +367,7 @@ async def local_training(comm, common_config, train_loader):
     common_config.train_loss = train_loss
 
 async def local_training2(comm, common_config, test_loader):
+    # 2号函数是测试函数
     # local_model = models.create_model_instance(common_config.dataset_type, common_config.model_type)
     # torch.nn.utils.vector_to_parameters(common_config.para, local_model.parameters())
     local_model = common_config.para
@@ -308,27 +418,6 @@ async def get_para(comm, common_config, rank, epoch_idx):
 
 #         local_para += para_delta
 #     return local_para
-
-def generate_layers_information(common_config, ):
-    # 1. layer_selector决定拉取的层
-    # 2. peer_selector决定拉取的邻居
-    # 输入：
-
-    pass
-
-def layer_selector():
-    # 1. 不同阶段考虑不同的层，根据精度确定训练阶段
-    # 2. 相比于上次更新，层的差异性
-    # 3. 层的学习速度的计算
-    # 4. SVCCA?
-    # 输入：1）之前保存的若干模型参数（设定滑动窗口的大小决定需要考虑之前的几轮更新的模型）
-    #       2）当前的模型测试精度，决定更新的阶段，来决定层的重要性
-    pass
-
-def peer_selector():
-    # 1. 考虑数据分布，计算分布的差异值（是否可以考虑首轮全局通信，每个client保存连通的邻居的分布信息）
-    # 2. 网络。根据上一轮的网络情况，记录下每个邻居的带宽，计算并均一化一个最大值
-    pass
 
 
 def get_layers_dict(model, layers=list()):

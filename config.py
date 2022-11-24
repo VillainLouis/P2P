@@ -46,7 +46,30 @@ class CommonConfig:
         self.train_loss = None
         self.tag=None
         #这里用来存worker的
+        # 下面的都是用于层选择的信息
+        self.older_models=Older_Models(3)
+        self.neighbor_bandwidth=dict()
+        self.neighbor_distribution=dict() # 每个邻居或自己的分布，都是一个长度为class number的list，每个值代表了每类数据的百分比
+        self.own_distribution=list()
 
+# 定义Older_Models类，用于记录之前的模型参数，不足窗口大小的时候不会滑动
+class Older_Models():
+    def __init__(self, window_size):
+        self.models = list()
+        self.window_size = window_size
+        self.index = 0 # 指向最老的模型，(index - 1) % window_size就是最新的模型
+        self.size = 0
+
+    def add_model(self, model_dict):
+        if self.size < self.window_size:
+            self.models.append(model_dict)
+            self.size += 1
+        else:
+            self.models[self.index] = model_dict
+            self.index = (self.index + 1) % self.size # 这里和下面的window_size与size等价
+    
+    def get_last_model_dict(self):
+        return self.models[(self.index - 1) % self.size]
 
 class ClientConfig:
     def __init__(self,
