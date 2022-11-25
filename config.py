@@ -50,7 +50,9 @@ class CommonConfig:
         self.older_models=Older_Models(3)
         self.neighbor_bandwidth=dict()
         self.neighbor_distribution=dict() # 每个邻居或自己的分布，都是一个长度为class number的list，每个值代表了每类数据的百分比
-        self.own_distribution=list()
+        self.num_layers=None
+        self.partition_sizes=None
+        self.layer_names=list()
 
 # 定义Older_Models类，用于记录之前的模型参数，不足窗口大小的时候不会滑动
 class Older_Models():

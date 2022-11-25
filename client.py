@@ -93,13 +93,14 @@ def main():
     common_config.weight_decay = client_config.common_config.weight_decay
     common_config.data_path = client_config.common_config.data_path
     common_config.para=client_config.para
-    common_config.own_distribution=client_config.train_data_idxes
 
-    # 记录层的数量
-    _cnt = 0
-    for _ in common_config.para.named_parameters():
-        _cnt += 1
-    common_config.num_layers = _cnt
+ 
+
+    # 数据分布信息
+    common_config.partition_sizes=client_config.common_config.partition_sizes
+    print(" common_config.partition_sizes",  common_config.partition_sizes)
+
+    
 
     common_config.tag = 1 # 就是epoch数
 
@@ -112,7 +113,16 @@ def main():
     test_loader = datasets.create_dataloaders(test_dataset, batch_size=16, shuffle=False)
     local_model = models.create_model_instance(common_config.dataset_type, common_config.model_type)
     torch.nn.utils.vector_to_parameters(common_config.para, local_model.parameters())
+
     common_config.para=local_model # common_config.para就是local_model
+
+
+    # 根据模型的type，生成对应的层名信息, 记录层的数量
+    _cnt = 0
+    for layer_name, _ in common_config.para.named_parameters():
+        common_config.layer_names.append(layer_name)
+        _cnt += 1
+    common_config.num_layers = _cnt
 
     while True:
         # Start local Training
@@ -128,39 +138,49 @@ def main():
         loop.close()
 
         # 本地训练完成之后，更新存储older_models的滑动窗口
-        common_config.older_models.add_model(dict(common_config.para))
+        common_config.older_models.add_model(dict(common_config.para.named_parameters()))
+
+        # 模拟网络带宽，在一定范围内随机带宽
+        for neighbor_idx in common_config.comm_neighbors:
+            common_config.neighbor_bandwidth[neighbor_idx] = random.randint(10, 20) # 模拟网络波动的范围是10到20内，用于选择peer
+
+        # 计算与邻居的数据分布差异 neighbor_distribution存的就是差异，直接用就可以
+        for neighbor_idx in common_config.comm_neighbors:
+            common_config.neighbor_distribution[neighbor_idx] = torch.norm(torch.from_numpy(common_config.partition_sizes[neighbor_idx - 1] - common_config.partition_sizes[rank - 1]))
+
 
         # Generate Pulling (layers) information ： 算法的核心就是如何决定层的拉取
-        '''自己的算法，根据模型类型，层的训练速度，邻居信息，层的差异值确定层的拉取信息'''
-        '''generate_layers_information().输入：model_type, common_config{模型参数等信息}。输出：所有邻居的层拉取信息'''
-        layers_needed_dict = dict() # {neighbor_name : list()} 每个邻居名字：[层名字的list]
-        for neighbor_idx in common_config.comm_neighbors:
-            layers_needed_dict[neighbor_idx] = []
-        
-        f0 = ["features.0.weight", "features.0.bias"] 
-        f3 = ["features.3.weight", "features.3.bias"]
-        f6 = ["features.6.weight", "features.6.bias"]
-        f8 = ["features.8.weight", "features.8.bias"]
-        f10 = ["features.10.weight", "features.10.bias"]
-        c0 = ["classifier.0.weight", "classifier.0.bias"]
-        c2 = ["classifier.2.weight", "classifier.2.bias"]
-        c4 = ["classifier.4.weight", "classifier.4.bias"] 
-        whole_model = f0 + f3 + f6 + f8 + f10 + c0 + c2 + c4  # 针对AlexNet的模型层参数名
-            
-        for neighbor_idx in common_config.comm_neighbors:
-            layers_needed_dict[neighbor_idx] = whole_model
+        layers_needed_dict = generate_layers_information(common_config=common_config, whole_model=False)
+        logger.info("Pulling INFO:")
+        logger.info("{}".format(layers_needed_dict))
 
-        # 第一轮传输完整模型
-        # 之后开始做层的选择
-        if common_config.tag == 1:
-            for neighbor_idx in common_config.comm_neighbors:
-                layers_needed_dict[neighbor_idx] = whole_model
-        else:
-            layers_pulling_information = generate_layers_information()
-            for neighbor_idx in common_config.comm_neighbors:
-                for layer in whole_model:
-                    if layers_pulling_information == 1:
-                        layers_needed_dict[neighbor_idx].append(layer) 
+        # '''自己的算法，根据模型类型，层的训练速度，邻居信息，层的差异值确定层的拉取信息'''
+        # '''generate_layers_information().输入：model_type, common_config{模型参数等信息}。输出：所有邻居的层拉取信息'''
+        # layers_needed_dict = dict() # {neighbor_name : list()} 每个邻居名字：[层名字的list]
+        # for neighbor_idx in common_config.comm_neighbors:
+        #     layers_needed_dict[neighbor_idx] = []
+        # f0 = ["features.0.weight", "features.0.bias"] 
+        # f3 = ["features.3.weight", "features.3.bias"]
+        # f6 = ["features.6.weight", "features.6.bias"]
+        # f8 = ["features.8.weight", "features.8.bias"]
+        # f10 = ["features.10.weight", "features.10.bias"]
+        # c0 = ["classifier.0.weight", "classifier.0.bias"]
+        # c2 = ["classifier.2.weight", "classifier.2.bias"]
+        # c4 = ["classifier.4.weight", "classifier.4.bias"] 
+        # whole_model = f0 + f3 + f6 + f8 + f10 + c0 + c2 + c4  # 针对AlexNet的模型层参数名
+        # for neighbor_idx in common_config.comm_neighbors:
+        #     layers_needed_dict[neighbor_idx] = whole_model
+        # # 第一轮传输完整模型
+        # # 之后开始做层的选择
+        # if common_config.tag == 1:
+        #     for neighbor_idx in common_config.comm_neighbors:
+        #         layers_needed_dict[neighbor_idx] = whole_model
+        # else:
+        #     layers_pulling_information = generate_layers_information()
+        #     for neighbor_idx in common_config.comm_neighbors:
+        #         for layer in whole_model:
+        #             if layers_pulling_information == 1:
+        #                 layers_needed_dict[neighbor_idx].append(layer) 
         
 
         # Tell neighbors: Layers needed from corresponding neighbors --> 存储在 common_config.neighbor_info=dict()
@@ -174,6 +194,7 @@ def main():
         asyncio.set_event_loop(loop)
         tasks = []
 
+        print(layers_needed_dict)
         for i in range(len(common_config.comm_neighbors)):
             nei_rank=common_config.comm_neighbors[i]
             data = layers_needed_dict[neighbor_idx] # 将layers_needed_dict中的层拉取信息发送给对应邻居，
@@ -251,7 +272,7 @@ def main():
             break
 
 
-def generate_layers_information(common_config, num_peers):
+def generate_layers_information(common_config, whole_model=False):
     # 输入： (全局第一轮通信传输全模型，第二轮开始)
     #     1. 自己的本地模型
     #     2. 之前保存的几轮聚合之后的模型，用于计算差异和学习速度 -- 窗口大小确定保存的模型参数个数
@@ -284,8 +305,8 @@ def generate_layers_information(common_config, num_peers):
         for layer, paras in local_model.named_parameters():
             denominator = 0
             for i in range(common_config.older_models.size - 1):
-                denominator += torch.norm(common_config.older_models.models[(common_config.older_models.index + i)%common_config.older_models.size] - common_config.older_models.models[(common_config.older_models.index + i + 1)%common_config.older_models.size])
-            molecule = torch.norm(common_config.older_models.models[common_config.index] - common_config.older_models.models[(common_config.index - 1)%common_config.older_models.size])
+                denominator += torch.norm(common_config.older_models.models[(common_config.older_models.index + i)%common_config.older_models.size][layer] - common_config.older_models.models[(common_config.older_models.index + i + 1)%common_config.older_models.size][layer])
+            molecule = torch.norm(common_config.older_models.models[common_config.older_models.index][layer] - common_config.older_models.models[(common_config.older_models.index - 1)%common_config.older_models.size][layer])
             learning_speed[layer] = molecule / (_epsilon + denominator)
         
         # 差异和学习速度各占0.5的权重
@@ -308,33 +329,54 @@ def generate_layers_information(common_config, num_peers):
         priority = dict()
         temp_value_for_normalize = 0
         for neighbor_idx in common_config.comm_neighbors:
+            # 首轮是从全部邻居拉取，所以都是有带宽数据的，需要自己每次接受层的时候更新common_config.neighbor_bandwidth字典
+            # 现在实现的是模拟的网络情况
             temp_value_for_normalize += common_config.neighbor_bandwidth[neighbor_idx]
         for neighbor_idx in common_config.comm_neighbors:
-            priority_bandwidth = (common_config.neighbor_bandwidth[neighbor_idx] / temp_value_for_normalize) # 带宽大的优先
-            priority_distribution = torch.norm(common_config.neighbor_distribution[neighbor_idx], common_config.own_distribution) # 分布差别大的优先
+            priority_bandwidth = common_config.neighbor_bandwidth[neighbor_idx] / temp_value_for_normalize # 带宽大的优先
+            priority_distribution = common_config.neighbor_distribution[neighbor_idx] # 分布差别大的优先
             priority[neighbor_idx] = priority_bandwidth * 0.5 + priority_distribution * 0.5
         return sorted_dict(priority)
 
         
     def sorted_dict(dict_be_sorted, key=lambda x:x[1], reverse=True): # 默认按键值升序排列
-        dict_be_sorted_by_key = sorted(dict_be_sorted, key)
+        dict_be_sorted_by_key = sorted(dict_be_sorted.items(), key=key, reverse=reverse)
         return dict(dict_be_sorted_by_key)
 
-    layers_info = layer_selector(common_config=common_config)
-    neighbor_info = peer_selector(common_config=common_config)
-
-    # 对邻居做选择结果做归一化
-    temp_value_for_normalize = 0
-    for neighbor_idx in neighbor_info:
-        temp_value_for_normalize += neighbor_info[neighbor_idx]
-    for neighbor_idx in neighbor_info:
-        neighbor_info[neighbor_idx] /= temp_value_for_normalize
-    # 根据layer_info和neighbor_info生成选择层的信息
+    
     result = dict()
-    for neighbor_name in neighbor_info.keys():
-        # 从优先度高的peer拿优先度更高的层，百分比？向上取整 TODO
-        result[neighbor_name] = [layers_info]
+    if common_config.tag > 1 and whole_model == False:
+        layers_info = layer_selector(common_config=common_config)
+        neighbor_info = peer_selector(common_config=common_config)
 
+        # print(layers_info)
+        # print(neighbor_info)
+
+        # 对邻居做选择结果做归一化
+        temp_value_for_normalize = 0
+        for neighbor_idx in neighbor_info:
+            temp_value_for_normalize += neighbor_info[neighbor_idx]
+        for neighbor_idx in neighbor_info:
+            neighbor_info[neighbor_idx] /= temp_value_for_normalize
+            result[neighbor_idx] = list() # 顺便初始化
+        # 根据layer_info和neighbor_info生成选择层的信息
+        _start = 0
+        _end = 0
+        for neighbor_name in neighbor_info.keys():
+            # 从优先度高的peer拿优先度更高的层，百分比？向上取整 
+            _end = _start + int(neighbor_info[neighbor_name] * common_config.num_layers) # 邻居的权重越大，拿越重要，越多的层
+            
+            _idx = 0
+            for layer in layers_info.keys(): # 根据[_start,_end)拿去对应重要性的层
+                if _idx >= _start and _idx < _end:
+                    result[neighbor_name].append(layer)
+                _idx += 1
+
+            _start = _end
+    else:
+        for neighbor_idx in common_config.comm_neighbors:
+            result[neighbor_idx] = common_config.layer_names
+    return result
 
 
 
@@ -437,9 +479,11 @@ def aggregate_model_with_dict(local_model, common_config):
         local_blocks_dict = common_config.neighbor_paras[neighbor_name]
         local_blocks_dicts.append(local_blocks_dict)
     
-    dict_keys = ['features.0.weight', 'features.0.bias', 'features.3.weight', 'features.3.bias', 'features.6.weight', 'features.6.bias', 'features.8.weight', 'features.8.bias', 'features.10.weight', 'features.10.bias',
-                'classifier.0.weight', 'classifier.0.bias', 'classifier.2.weight', 'classifier.2.bias', 'classifier.4.weight', 'classifier.4.bias'
-                ]
+    # dict_keys = ['features.0.weight', 'features.0.bias', 'features.3.weight', 'features.3.bias', 'features.6.weight', 'features.6.bias', 'features.8.weight', 'features.8.bias', 'features.10.weight', 'features.10.bias',
+    #             'classifier.0.weight', 'classifier.0.bias', 'classifier.2.weight', 'classifier.2.bias', 'classifier.4.weight', 'classifier.4.bias'
+    #             ]
+
+    dict_keys = common_config.layer_names
     updated_para_dict = dict()
     # 利用空字典、邻居传来的block、本地模型 --> 模型字典 --> 构建新的模型
     local_model_dict = dict(local_model.named_parameters())

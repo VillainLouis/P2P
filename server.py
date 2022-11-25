@@ -94,6 +94,12 @@ def main():
     logger.info("para num: {}".format(common_config.para_nums))
     logger.info("Model Size: {} MB".format(model_size))
 
+    # Create model instance
+    train_data_partition, partition_sizes = partition_data(common_config.dataset_type, common_config.data_pattern, worker_num=worker_num)
+    
+    # 放入数据分布信息
+    common_config.partition_sizes = partition_sizes
+
     # create workers
     worker_list: List[Worker] = list()
     for worker_idx in range(worker_num):
@@ -102,9 +108,11 @@ def main():
         )
     #到了这里，worker已经启动了
 
-    # Create model instance
-    train_data_partition = partition_data(common_config.dataset_type, common_config.data_pattern, worker_num=worker_num)
 
+
+
+    
+    # 将数据索引放到commconfig中去
     for worker_idx, worker in enumerate(worker_list):
         worker.config.para = init_para
         worker.config.train_data_idxes = train_data_partition.use(worker_idx)
@@ -152,9 +160,9 @@ def main():
         print("Epoch: {}, average accuracy: {}, average test_loss: {}, average train_loss: {}\n".format(epoch_idx, avg_acc, avg_test_loss, avg_train_loss))
         logger.info("Epoch: {}, average accuracy: {}, average test_loss: {}, average train_loss: {}\n".format(epoch_idx, avg_acc, avg_test_loss, avg_train_loss))
 
-        topology=update_T(worker_num)
+        # topology=update_T(worker_num)
         logging.info(topology)
-        print(topology)
+        # print(topology)
         update_W(topology,worker_list)
     # exit()
     # close socket
@@ -260,7 +268,7 @@ def partition_data(dataset_type, data_pattern, worker_num=10):
             non_iid_ratio = 0.8
             partition_sizes = non_iid_partition(non_iid_ratio,train_class_num,worker_num)
     train_data_partition = datasets.LabelwisePartitioner(train_dataset, partition_sizes=partition_sizes)
-    return train_data_partition
+    return train_data_partition, partition_sizes
 
 if __name__ == "__main__":
     main()
