@@ -1,21 +1,10 @@
-from fileinput import filename
-import imp
 import os
-import sys
 import argparse
-import socket
-import pickle
 import asyncio
-import concurrent.futures
-import json
 import random
 import time
-from tkinter.tix import Tree
 import numpy as np
-import threading
 import torch
-import copy
-import math
 from config import *
 import torch.nn.functional as F
 import datasets, models
@@ -41,6 +30,10 @@ parser.add_argument('--weight_decay', type=float, default=0.0)
 parser.add_argument('--data_path', type=str, default='/data/jliu/data')
 parser.add_argument('--use_cuda', action="store_false", default=True)
 
+# new addition
+parser.add_argument('--window_size', type=int, default=3)
+parser.add_argument('--is_whole_model', type=bool, default=False)
+
 args = parser.parse_args()
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 os.environ['CUDA_VISIBLE_DEVICES'] = '3'
@@ -62,15 +55,17 @@ logger = logging.getLogger(os.path.basename(__file__).split('.')[0])
 logger.setLevel(logging.INFO)
 
 now = time.strftime("%Y-%m-%d-%H_%M_%S",time.localtime(time.time()))
-filename = RESULT_PATH + now + "_" +os.path.basename(__file__).split('.')[0] +'.log'
+filename = RESULT_PATH + now + "_" + 'Server' +'.log' # os.path.basename(__file__).split('.')[0] 
 fileHandler = logging.FileHandler(filename=filename)
 formatter = logging.Formatter("%(message)s")
 fileHandler.setFormatter(formatter)
 logger.addHandler(fileHandler)
 
 def main():
-    logger.info("csize:{}".format(int(csize)))
-    logger.info("server start (rank):{}".format(int(rank)))
+    worker_num = int(csize)-1
+    logger.info("MPI Communication Size:{} -- {} Clients.".format(csize, worker_num))
+    logger.info("Server's Rank:{}".format(int(rank)))
+
     # init config
     common_config = CommonConfig()
     common_config.model_type = args.model_type
@@ -85,13 +80,16 @@ def main():
     common_config.data_path = args.data_path
     common_config.weight_decay = args.weight_decay
 
-    worker_num = int(csize)-1
+    # new addtion
+    common_config.window_size = args.window_size
+    common_config.is_whole_model = args.is_whole_model
+    logger.info("common_config.is_whole_model {}".format(common_config.is_whole_model))
 
     global_model = models.create_model_instance(common_config.dataset_type, common_config.model_type)
     init_para = torch.nn.utils.parameters_to_vector(global_model.parameters())
     common_config.para_nums=init_para.nelement()
     model_size = init_para.nelement() * 4 / 1024 / 1024
-    logger.info("para num: {}".format(common_config.para_nums))
+    logger.info("Model {}'s number of parametes: {}".format(common_config.model_type, common_config.para_nums))
     logger.info("Model Size: {} MB".format(model_size))
 
     # Create model instance
@@ -99,6 +97,10 @@ def main():
     
     # 放入数据分布信息
     common_config.partition_sizes = partition_sizes
+    logger.info("Data Pattern: \n{}".format(common_config.data_pattern))
+    logger.info("The Overall Data Distribution")
+    for partition in common_config.partition_sizes:
+        logger.info("\n{}".format(partition))
 
     # create workers
     worker_list: List[Worker] = list()
@@ -108,10 +110,6 @@ def main():
         )
     #到了这里，worker已经启动了
 
-
-
-
-    
     # 将数据索引放到commconfig中去
     for worker_idx, worker in enumerate(worker_list):
         worker.config.para = init_para
@@ -121,25 +119,25 @@ def main():
     communication_parallel(worker_list, 1, comm, action="init")
 
     # recoder: SummaryWriter = SummaryWriter()
-    global_model.to(device)
-    _, test_dataset = datasets.load_datasets(common_config.dataset_type,common_config.data_path)
-    test_loader = datasets.create_dataloaders(test_dataset, batch_size=128, shuffle=False)
+    # global_model.to(device)
+    # _, test_dataset = datasets.load_datasets(common_config.dataset_type,common_config.data_path)
+    # test_loader = datasets.create_dataloaders(test_dataset, batch_size=128, shuffle=False)
 
+    # Generating Topology
     adjacency_matrix = np.zeros((worker_num, worker_num), dtype=np.int)
-
     for worker_idx in range(worker_num):
         adjacency_matrix[worker_idx][worker_idx-1] = 1
         adjacency_matrix[worker_idx][(worker_idx+1)%worker_num] = 1
-
     # for worker_idx1 in range(worker_num):
     #     for worker_idx2 in range(worker_num):
     #         if worker_idx1!=worker_idx2:
     #             adjacency_matrix[worker_idx1][worker_idx2] = 1
-
     topology=adjacency_matrix
-    logging.info(topology)
+    logging.info("Current Topology: \n{}".format(topology))
     print(topology)
-    update_W(topology,worker_list)
+    update_client_neighbors(topology,worker_list)
+
+    # Training Procedure
     for epoch_idx in range(1, 1+common_config.epoch):
         communication_parallel(worker_list, epoch_idx, comm, action="send_para")
         # print("send end")
@@ -160,12 +158,12 @@ def main():
         print("Epoch: {}, average accuracy: {}, average test_loss: {}, average train_loss: {}\n".format(epoch_idx, avg_acc, avg_test_loss, avg_train_loss))
         logger.info("Epoch: {}, average accuracy: {}, average test_loss: {}, average train_loss: {}\n".format(epoch_idx, avg_acc, avg_test_loss, avg_train_loss))
 
-        # topology=update_T(worker_num)
         logging.info(topology)
         # print(topology)
-        update_W(topology,worker_list)
+        update_client_neighbors(topology,worker_list)
     # exit()
     # close socket
+    os.system("./mv_current_result.sh")
 
 def communication_parallel(worker_list, epoch_idx, comm, action, data=None):
     loop = asyncio.new_event_loop()
@@ -183,7 +181,7 @@ def communication_parallel(worker_list, epoch_idx, comm, action, data=None):
     loop.run_until_complete(asyncio.wait(tasks))
     loop.close()
 
-def update_T(worker_num):
+def update_topology(worker_num):
     worker_selected=dict()
     for i in range(worker_num):
         worker_selected[i]=0
@@ -200,7 +198,7 @@ def update_T(worker_num):
     return topology
 
 
-def update_W(topology, worker_list):
+def update_client_neighbors(topology, worker_list):
     for worker in worker_list:
         worker.config.comm_neighbors=list()
         for i in range(len(worker_list)):

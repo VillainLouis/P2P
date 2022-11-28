@@ -1,8 +1,3 @@
-import os
-from typing import List
-import paramiko
-from scp import SCPClient
-from torch.utils.tensorboard import SummaryWriter
 from comm_utils import *
 
 
@@ -20,7 +15,7 @@ class Worker:
         await send_data(comm, data, self.rank, epoch_idx)    
 
     async def send_init_config(self, comm, epoch_idx):
-        print("before send", self.rank, "tag:", epoch_idx)
+        # print("before send", self.rank, "tag:", epoch_idx)
         await send_data(comm, self.config, self.rank, epoch_idx)    
 
     async def get_data(self, comm, epoch_idx):
@@ -47,12 +42,13 @@ class CommonConfig:
         self.tag=None
         #这里用来存worker的
         # 下面的都是用于层选择的信息
-        self.older_models=Older_Models(3)
+        self.older_models=None
         self.neighbor_bandwidth=dict()
         self.neighbor_distribution=dict() # 每个邻居或自己的分布，都是一个长度为class number的list，每个值代表了每类数据的百分比
         self.num_layers=None
         self.partition_sizes=None
         self.layer_names=list()
+        self.layer_num_parameters=dict() # 记录模型每一层的参数量
 
 # 定义Older_Models类，用于记录之前的模型参数，不足窗口大小的时候不会滑动
 class Older_Models():
@@ -67,6 +63,7 @@ class Older_Models():
             self.models.append(model_dict)
             self.size += 1
         else:
+            # print(self.index)
             self.models[self.index] = model_dict
             self.index = (self.index + 1) % self.size # 这里和下面的window_size与size等价
     

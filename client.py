@@ -1,20 +1,12 @@
 import os
 import time
-import socket
-import pickle
 import argparse
 import asyncio
-import concurrent.futures
-import threading
-import math
-import copy
-import numpy as np
 import torch
 import torch.optim as optim
-from torch.utils.tensorboard import SummaryWriter
 # from pulp import *
 import random
-from config import ClientConfig, CommonConfig
+from config import ClientConfig, CommonConfig, Older_Models
 from comm_utils import *
 from training_utils import train, test
 import datasets, models
@@ -40,16 +32,14 @@ device = torch.device("cuda" if args.use_cuda and torch.cuda.is_available() else
 
 # init logger
 now = time.strftime("%Y-%m-%d-%H_%M_%S",time.localtime(time.time()))
-RESULT_PATH = os.getcwd() + '/clients/' + now + '/'
+RESULT_PATH = os.getcwd() + '/clients/' # + now + '/'
 
 if not os.path.exists(RESULT_PATH):
     os.makedirs(RESULT_PATH, exist_ok=True)
 
 logger = logging.getLogger(os.path.basename(__file__).split('.')[0])
 logger.setLevel(logging.INFO)
-
-
-filename = RESULT_PATH + now + "_" +os.path.basename(__file__).split('.')[0] + '_'+ str(int(rank)) +'.log'
+filename = RESULT_PATH + now + "_" + 'Client' + '_'+ str(int(rank)) +'.log' # os.path.basename(__file__).split('.')[0] + '_'+ str(int(rank)) +'.log'
 fileHandler = logging.FileHandler(filename=filename)
 formatter = logging.Formatter("%(message)s")
 fileHandler.setFormatter(formatter)
@@ -59,19 +49,19 @@ logger.addHandler(fileHandler)
 MASTER_RANK=0
 
 async def get_init_config(comm, MASTER_RANK, config):
-    logger.info("before init")
+    logger.info("\nGetting init configuration...")
     config_received = await get_data(comm, MASTER_RANK, 1)
-    logger.info("after init")
+    logger.info("Geting init configuration Complete.\n")
     for k, v in config_received.__dict__.items():
         setattr(config, k, v)
 
 def main():
-    logger.info("client_rank:{}".format(rank))
+    logger.info("Client Rank: {}".format(rank))
     client_config = ClientConfig(
         common_config=CommonConfig()
     )
 
-    logger.info("start")
+    logger.info("\nTraining Start...")
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     tasks = []
@@ -94,19 +84,23 @@ def main():
     common_config.data_path = client_config.common_config.data_path
     common_config.para=client_config.para
 
+    common_config.window_size = client_config.common_config.window_size
+    common_config.is_whole_model = client_config.common_config.is_whole_model
+    common_config.older_models = Older_Models(window_size=common_config.window_size)
+
  
 
     # 数据分布信息
     common_config.partition_sizes=client_config.common_config.partition_sizes
-    print(" common_config.partition_sizes",  common_config.partition_sizes)
+    logger.info("The Overall Data Distribution:")
+    for partition in common_config.partition_sizes:
+        logger.info("\n{}".format(partition))
 
     
 
     common_config.tag = 1 # 就是epoch数
 
     # init config
-    logger.info(str(common_config.__dict__))
-
     logger.info(str(len(client_config.train_data_idxes)))
     train_dataset, test_dataset = datasets.load_datasets(common_config.dataset_type, common_config.data_path)
     train_loader = datasets.create_dataloaders(train_dataset, batch_size=common_config.batch_size, selected_idxs=client_config.train_data_idxes)
@@ -116,19 +110,32 @@ def main():
 
     common_config.para=local_model # common_config.para就是local_model
 
-
-    # 根据模型的type，生成对应的层名信息, 记录层的数量
+    # 根据模型的type，生成对应的层名信息, 记录层的数量,层的参数量
     _cnt = 0
-    for layer_name, _ in common_config.para.named_parameters():
+    for layer_name, paras in common_config.para.named_parameters():
         common_config.layer_names.append(layer_name)
+        common_config.layer_num_parameters[layer_name] = paras.view(-1).size()[0]
         _cnt += 1
     common_config.num_layers = _cnt
+    logger.info("\nThe number of parameters of layers of Model {}:".format(common_config.model_type))
+    for layer_name in common_config.layer_num_parameters.keys():
+        logger.info("\t{} -- number of parameters: {}".format(layer_name, common_config.layer_num_parameters[layer_name]))
+    
+
+    logger.info("\nThe Content of common_config:")
+    logger.info(str(common_config.__dict__))
+
+
+    total_computing_timer = 0 # 记录训练时间
+    total_communication_timer = 0 # 利用模拟的带宽计算，不是实际的网络情况
+    total_communication_cost = 0
 
     while True:
         # Start local Training
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         tasks = []
+        _timer = time.time()
         tasks.append(
             asyncio.ensure_future(
                 local_training(comm, common_config, train_loader)
@@ -136,39 +143,57 @@ def main():
         )
         loop.run_until_complete(asyncio.wait(tasks))
         loop.close()
+        _timer = time.time() - _timer
+        logger.info("\nLocal Training Complete. \nEpoch {}'s Training Time: {}".format(common_config.tag, _timer)) # 记录当前epoch的训练是时间
+        total_computing_timer += _timer
 
         # 本地训练完成之后，更新存储older_models的滑动窗口
         common_config.older_models.add_model(dict(common_config.para.named_parameters()))
+        logger.info("\nCurrent older_models Windows: Size : {}; Index {}".format(common_config.older_models.size, common_config.older_models.index))
+
+        
+        logger.info("\nClient {}'s neighbors' rank:".format(rank)) # 打印一下邻居的rank号
+        for neighbor_idx in common_config.comm_neighbors:
+            logger.info("\t Neighbor Rank {}".format(neighbor_idx))
 
         # 模拟网络带宽，在一定范围内随机带宽
+        logger.info("\nCurrent neighbors' Bandwidth information:")
         for neighbor_idx in common_config.comm_neighbors:
             common_config.neighbor_bandwidth[neighbor_idx] = random.randint(10, 20) # 模拟网络波动的范围是10到20内，用于选择peer
+            logger.info("\tNeighbor Rank: {}: {}MBps".format(neighbor_idx, common_config.neighbor_bandwidth[neighbor_idx]))
 
         # 计算与邻居的数据分布差异 neighbor_distribution存的就是差异，直接用就可以
+        logger.info("\nCurrent client {}'s distribution discrepancies of its neighbors:".format(rank))
         for neighbor_idx in common_config.comm_neighbors:
             common_config.neighbor_distribution[neighbor_idx] = torch.norm(torch.from_numpy(common_config.partition_sizes[neighbor_idx - 1] - common_config.partition_sizes[rank - 1]))
-
+            logger.info("\tNeighbor Rank {}: {}".format(rank, common_config.neighbor_distribution[neighbor_idx]))
 
         # Generate Pulling (layers) information ： 算法的核心就是如何决定层的拉取
-        layers_needed_dict = generate_layers_information(common_config=common_config, whole_model=False)
-        logger.info("Pulling INFO:")
-        logger.info("{}".format(layers_needed_dict))
+        layers_needed_dict = generate_layers_information(common_config=common_config, whole_model=common_config.is_whole_model)
+        # logger.info("layers_needed_dict = generate_layers_information(common_config=common_config, whole_model=common_config.is_whole_model){}".format(common_config.is_whole_model))
+        logger.info("\nLayer pulling infomation:")
+        # logger.info("{}".format(layers_needed_dict))
+        for neighbor_idx in layers_needed_dict.keys():
+            logger.info("\tThe Layers pulling from Neighbor Rank {}: {}".format(neighbor_idx, layers_needed_dict[neighbor_idx]))
+            
+        # 记录拉取层的通信量和时间，根据带宽计算通信时间
+        _communication_cost, _communication_time = communication_cost(common_config=common_config, layer_info_dict=layers_needed_dict)
+        logger.info("\nCommunication Traffic (Epoch {}) for pulling layers from neighbors is {}MB.".format(common_config.tag,_communication_cost))
+        logger.info("Communication Time (Epoch {}) for pulling layers from neighbors is {}s.".format(common_config.tag,_communication_time))
+        total_communication_timer += _communication_time
+        total_communication_cost += _communication_cost
 
         # Tell neighbors: Layers needed from corresponding neighbors --> 存储在 common_config.neighbor_info=dict()
-                
-        logger.info("Client {}'s neighbors' indices:".format(rank)) # 打印一下邻居的rank号
-        for neighbor_idx in common_config.comm_neighbors:
-            logger.info("\t{}".format(neighbor_idx))
         logger.info("\n")
         logger.info("Sending/getting information to/from its neighbors")
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         tasks = []
 
-        print(layers_needed_dict)
+        # print(layers_needed_dict) # 打印到终端，方便及时查看全局信息
         for i in range(len(common_config.comm_neighbors)):
             nei_rank=common_config.comm_neighbors[i]
-            data = layers_needed_dict[neighbor_idx] # 将layers_needed_dict中的层拉取信息发送给对应邻居，
+            data = layers_needed_dict[nei_rank] # 将layers_needed_dict中的层拉取信息发送给对应邻居，
                                                     # 即layers_needed_dict[neighbor_idx]发送给rank=neighbor_idx的邻居
 
             if nei_rank > rank:
@@ -189,10 +214,15 @@ def main():
 
         
         # Sending/Get parameters: Get layers parameters from neighbors --> 根据common_config.neighbor_info=dict()，将本地模型的对应层发给邻居
+        #     因为是模拟的带宽，所以不需要在这里记录通信量和通信时间信息
         local_model=common_config.para
         layers_sending_dict = dict() # 存储所有需要发送的层参数的信息
         for neighbor_idx in common_config.comm_neighbors:
             layers_sending_dict[neighbor_idx] = get_layers_dict(local_model, common_config.neighbor_info[neighbor_idx])
+        # logger.info("layers_sending_dict: ")
+        # for neighbor_idx in layers_sending_dict.keys():
+        #     logger.info("\t{}".format(layers_sending_dict[neighbor_idx].keys()))
+
 
         logger.info("\n")
         logger.info("Sending/getting parameters to/from its neighbors")
@@ -201,8 +231,8 @@ def main():
         tasks = []
         for i in range(len(common_config.comm_neighbors)):
             nei_rank=common_config.comm_neighbors[i]
-            data = layers_sending_dict[neighbor_idx]
-            logger.info("Client {}'s neighbors:{}".format(rank, common_config.comm_neighbors[i]))
+            data = layers_sending_dict[nei_rank]
+            # logger.info("Client {}'s neighbors:{}".format(rank, common_config.comm_neighbors[i]))
 
             if nei_rank > rank:
                 task = asyncio.ensure_future(send_para(comm, data, nei_rank, common_config.tag))
@@ -216,18 +246,26 @@ def main():
                 # print("worker send")
                 task = asyncio.ensure_future(send_para(comm, data, nei_rank, common_config.tag))
                 tasks.append(task)
-
         loop.run_until_complete(asyncio.wait(tasks))
         loop.close()
-        logger.info("Sending/getting parameters complete")
+        logger.info("Sending/getting parameters complete\n")
+
+        logger.info("\nReceived Neighbor's Layers:")
+        for neighbor_idx in common_config.neighbor_paras.keys():
+            logger.info("\t Neighbor Rank {}: {}".format(neighbor_idx,common_config.neighbor_paras[neighbor_idx].keys()))
 
         # Aggregate 
         # local_para = aggregate_model(local_para, common_config)
         # torch.nn.utils.vector_to_parameters(local_para, local_model.parameters())
+        logger.info("\nLocal Model Aggregating...")
         local_model = aggregate_model_with_dict(local_model, common_config)
+        logger.info("Local Aggregation Complete.\n")
 
         common_config.para=local_model
 
+
+        # Test
+        logger.info("Testing...")
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         tasks = []
@@ -240,7 +278,23 @@ def main():
         loop.close()
 
         if common_config.tag==common_config.epoch+1:
+            logger.info("The Training Time is {}".format(total_computing_timer))
+            logger.info("THe Commnunication Time is {}".format(total_communication_timer))
+            logger.info("The Training and Communicating Time is {}".format(total_computing_timer + total_communication_timer))
+            logger.info("The Total Communication Cost is: {} -- {}MB".format(total_communication_cost, total_communication_cost * 4 / 1024 / 1024))
             break
+
+def communication_cost(common_config, layer_info_dict):
+    _communication_cost = 0
+    for neighbor_idx in layer_info_dict.keys():
+        for layer_name in layer_info_dict[neighbor_idx]:
+            _communication_cost += common_config.layer_num_parameters[layer_name] * 4 / 1024 / 1024
+    _communication_time = 0.0
+    for neighbor_idx in layer_info_dict.keys():
+        for layer_name in layer_info_dict[neighbor_idx]:
+            _communication_time += common_config.layer_num_parameters[layer_name] * 4 / 1024 / 1024 / common_config.neighbor_bandwidth[neighbor_idx]
+    return _communication_cost, _communication_time
+
 
 
 def generate_layers_information(common_config, whole_model=False):
@@ -264,26 +318,31 @@ def generate_layers_information(common_config, whole_model=False):
         # 返回：
         
         # 1) 差异性(与自己的模型做对比？后面可以尝试下与拉取的邻居层的对比)
+        logger.info("\nIN layer_selector:")
         discrepancy = dict()
         last_model_dict = common_config.older_models.get_last_model_dict()
         local_model = common_config.para
+        logger.info("Discrepency Information:")
         for layer, paras in local_model.named_parameters():
             discrepancy[layer] = torch.norm(paras - last_model_dict[layer])# 利用二范数计算差异值
+            logger.info("\tLayer: {} -- {}".format(layer, discrepancy[layer]))
 
         #    层学习速度计算，根据当前窗口，有多少个模型就计算多少个
         learning_speed = dict()
         _epsilon = 1e-6
+        logger.info("Learning Speed:")
         for layer, paras in local_model.named_parameters():
             denominator = 0
             for i in range(common_config.older_models.size - 1):
                 denominator += torch.norm(common_config.older_models.models[(common_config.older_models.index + i)%common_config.older_models.size][layer] - common_config.older_models.models[(common_config.older_models.index + i + 1)%common_config.older_models.size][layer])
             molecule = torch.norm(common_config.older_models.models[common_config.older_models.index][layer] - common_config.older_models.models[(common_config.older_models.index - 1)%common_config.older_models.size][layer])
             learning_speed[layer] = molecule / (_epsilon + denominator)
-        
+            logger.info("\tLayer: {} -- {}".format(learning_speed[layer]))
         # 差异和学习速度各占0.5的权重
         priority = dict()
         for layer in discrepancy.keys():
             priority[layer] = discrepancy[layer] * 0.5 + learning_speed[layer] * 0.5
+        logger.info("Exit layer_selector")
         return sorted_dict(priority)
 
 
@@ -318,8 +377,14 @@ def generate_layers_information(common_config, whole_model=False):
     result = dict()
     if common_config.tag > 1 and whole_model == False:
         layers_info = layer_selector(common_config=common_config)
+        logger.info("\nLayer Priority Information:")
+        for layer in layers_info.keys():
+            logger.info("\t{} -- Priority: {}".format(layer, layers_info[layer]))
         neighbor_info = peer_selector(common_config=common_config)
-
+        logger.info("\nNeighbor Priority Information:")
+        for neighbor_idx in neighbor_info.keys():
+            logger.info("\tNeighbor Rank {} -- Priority: {}".format(neighbor_idx, neighbor_info[neighbor_idx]))
+        
         # print(layers_info)
         # print(neighbor_info)
 
@@ -333,7 +398,7 @@ def generate_layers_information(common_config, whole_model=False):
         # 根据layer_info和neighbor_info生成选择层的信息
         _start = 0
         _end = 0
-        num_layers_selected = int(common_config.num_layers * 0.8) # 设置从所有邻居拿去层的总数
+        num_layers_selected = int(common_config.num_layers * 1) # 设置从所有邻居拿去层的总数
         for neighbor_name in neighbor_info.keys():
             # 从优先度高的peer拿优先度更高的层，百分比？向上取整 
             _end = _start + int(neighbor_info[neighbor_name] * num_layers_selected) # 邻居的权重越大，拿越重要，越多的层
@@ -367,8 +432,8 @@ async def local_training(comm, common_config, train_loader):
     
 
     logger.info("\n")    
-    logger.info("*" * 100)
-    logger.info("epoch-{} lr: {}".format(common_config.tag, epoch_lr))
+    logger.info("*" * 150)
+    logger.info("Starting Local Training (Epoch-{} lr: {})...".format(common_config.tag, epoch_lr))
     if common_config.momentum<0:
         optimizer = optim.SGD(local_model.parameters(), lr=epoch_lr, weight_decay=common_config.weight_decay)
     else:
@@ -388,13 +453,13 @@ async def local_training2(comm, common_config, test_loader):
     local_model.to(device)
     # torch.nn.utils.vector_to_parameters(local_para, local_model.parameters())
     test_loss, acc = test(local_model, test_loader, device, model_type=common_config.model_type)
-    logger.info("after aggregation, epoch: {}, train loss: {}, test loss: {}, test accuracy: {}".format(common_config.tag, common_config.train_loss, test_loss, acc))
-    logger.info("send para")
+    logger.info("After aggregation, Epoch: {}, Train Loss: {}, Test Loss: {}, test accuracy: {}".format(common_config.tag, common_config.train_loss, test_loss, acc))
+    logger.info("Sending Test information to server process.")
 
     data=(acc, test_loss, common_config.train_loss)
     # send_data_await(comm, local_paras, MASTER_RANK, common_config.tag)
     await send_data(comm, data, MASTER_RANK, common_config.tag)
-    logger.info("after send")
+    logger.info("Sending Complete.")
     # local_para = await get_data(comm, MASTER_RANK, common_config.tag)
     # common_config.para=local_para
     # common_config.tag = common_config.tag+1
@@ -403,22 +468,22 @@ async def local_training2(comm, common_config, test_loader):
 
 async def send_para(comm, data, rank, epoch_idx):
     # print("send_data")
-    logger.info("send_data")
+    # logger.info("send_data")
     # print("send rank {}, get rank {}".format(comm.Get_rank(), rank))
-    logger.info("send rank {}, get rank {}".format(comm.Get_rank(), rank))
+    logger.info("\tClient Rank {} Sending paras to Client Rank {}".format(comm.Get_rank(), rank))
     # print("get rank: ", rank)
     await send_data(comm, data, rank, epoch_idx)
 
 async def get_info(comm, common_config, rank, epoch_idx):
     # print("get_data")
-    logger.info("get_data")
-    logger.info("get rank {}, send rank {}".format(comm.Get_rank(), rank))
+    # logger.info("get_data")
+    logger.info("\tClient Rank {} Getting Layer Information from Client Rank {}".format(comm.Get_rank(), rank))
     common_config.neighbor_info[rank] = await get_data(comm, rank, epoch_idx)
 
 async def get_para(comm, common_config, rank, epoch_idx):
     # print("get_data")
-    logger.info("get_data")
-    logger.info("get rank {}, send rank {}".format(comm.Get_rank(), rank))
+    # logger.info("get_data")
+    logger.info("\tClient Rank {} Getting Parameters from Client Rank {}".format(comm.Get_rank(), rank))
     common_config.neighbor_paras[rank] = await get_data(comm, rank, epoch_idx)
 
 # def aggregate_model(local_para, common_config):
@@ -448,18 +513,12 @@ def aggregate_model_with_dict(local_model, common_config):
     local_blocks_dicts = list()
     for neighbor_name in common_config.comm_neighbors:
         # print("neighbor name: {}".format(neighbor_name))
-        local_blocks_dict = common_config.neighbor_paras[neighbor_name]
-        local_blocks_dicts.append(local_blocks_dict)
-    
-    # dict_keys = ['features.0.weight', 'features.0.bias', 'features.3.weight', 'features.3.bias', 'features.6.weight', 'features.6.bias', 'features.8.weight', 'features.8.bias', 'features.10.weight', 'features.10.bias',
-    #             'classifier.0.weight', 'classifier.0.bias', 'classifier.2.weight', 'classifier.2.bias', 'classifier.4.weight', 'classifier.4.bias'
-    #             ]
-
+        local_blocks_dicts.append(common_config.neighbor_paras[neighbor_name])
     dict_keys = common_config.layer_names
+
     updated_para_dict = dict()
     # 利用空字典、邻居传来的block、本地模型 --> 模型字典 --> 构建新的模型
     local_model_dict = dict(local_model.named_parameters())
- 
     with torch.no_grad(): # 直接平均的聚合方式
         for layer_name in dict_keys:
             # 按层一次更新模型字典参数
@@ -486,13 +545,12 @@ def aggregate_model_with_dict(local_model, common_config):
                 layer_para /= count # 样本均分，所以平局参数
                 #layer_para = layer_para * 0.5 + local_model_dict[name] * 0.5 # 邻居参数占更新权重一半
                 updated_para_dict[layer_name] = layer_para
-                logger.info("This layer use {} neighbor paras to update.".format(count - 1))
-                logger.info("Layer {} Use neighbor layer to update.".format(layer_name))
+                logger.info("\tLayer {}: Use {} Neighbor layer to update.".format(layer_name, count - 1))
                 # print("updated_para_dict[{}] == local_model_dict[{}]:{}".format(name, name, updated_para_dict[name] == local_model_dict[name]))
             else:
                 # 邻居中没有该层的参数，沿用自己之前的莫i选哪个参数
                 updated_para_dict[layer_name] = local_model_dict[layer_name]
-                logger.info("Layer {} Use its own previous layer to update.".format(layer_name))
+                logger.info("\tLayer {} Use its Own previous layer.".format(layer_name))
                 # print("updated_para_dict[{}] == local_model_dict[{}]:{}".format(name, name, updated_para_dict[name] == local_model_dict[name]))
             # if is_layer_aggregate == False: # 没有利用邻居层更新的话，之间从本地模型拷贝参数
             #     updated_para_dict[name] = local_model_dict[name]
