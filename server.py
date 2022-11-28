@@ -127,14 +127,14 @@ def main():
 
     adjacency_matrix = np.zeros((worker_num, worker_num), dtype=np.int)
 
-    # for worker_idx in range(worker_num):
-    #     adjacency_matrix[worker_idx][worker_idx-1] = 1
-    #     adjacency_matrix[worker_idx][(worker_idx+1)%worker_num] = 1
+    for worker_idx in range(worker_num):
+        adjacency_matrix[worker_idx][worker_idx-1] = 1
+        adjacency_matrix[worker_idx][(worker_idx+1)%worker_num] = 1
 
-    for worker_idx1 in range(worker_num):
-        for worker_idx2 in range(worker_num):
-            if worker_idx1!=worker_idx2:
-                adjacency_matrix[worker_idx1][worker_idx2] = 1
+    # for worker_idx1 in range(worker_num):
+    #     for worker_idx2 in range(worker_num):
+    #         if worker_idx1!=worker_idx2:
+    #             adjacency_matrix[worker_idx1][worker_idx2] = 1
 
     topology=adjacency_matrix
     logging.info(topology)

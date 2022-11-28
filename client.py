@@ -154,35 +154,6 @@ def main():
         logger.info("Pulling INFO:")
         logger.info("{}".format(layers_needed_dict))
 
-        # '''自己的算法，根据模型类型，层的训练速度，邻居信息，层的差异值确定层的拉取信息'''
-        # '''generate_layers_information().输入：model_type, common_config{模型参数等信息}。输出：所有邻居的层拉取信息'''
-        # layers_needed_dict = dict() # {neighbor_name : list()} 每个邻居名字：[层名字的list]
-        # for neighbor_idx in common_config.comm_neighbors:
-        #     layers_needed_dict[neighbor_idx] = []
-        # f0 = ["features.0.weight", "features.0.bias"] 
-        # f3 = ["features.3.weight", "features.3.bias"]
-        # f6 = ["features.6.weight", "features.6.bias"]
-        # f8 = ["features.8.weight", "features.8.bias"]
-        # f10 = ["features.10.weight", "features.10.bias"]
-        # c0 = ["classifier.0.weight", "classifier.0.bias"]
-        # c2 = ["classifier.2.weight", "classifier.2.bias"]
-        # c4 = ["classifier.4.weight", "classifier.4.bias"] 
-        # whole_model = f0 + f3 + f6 + f8 + f10 + c0 + c2 + c4  # 针对AlexNet的模型层参数名
-        # for neighbor_idx in common_config.comm_neighbors:
-        #     layers_needed_dict[neighbor_idx] = whole_model
-        # # 第一轮传输完整模型
-        # # 之后开始做层的选择
-        # if common_config.tag == 1:
-        #     for neighbor_idx in common_config.comm_neighbors:
-        #         layers_needed_dict[neighbor_idx] = whole_model
-        # else:
-        #     layers_pulling_information = generate_layers_information()
-        #     for neighbor_idx in common_config.comm_neighbors:
-        #         for layer in whole_model:
-        #             if layers_pulling_information == 1:
-        #                 layers_needed_dict[neighbor_idx].append(layer) 
-        
-
         # Tell neighbors: Layers needed from corresponding neighbors --> 存储在 common_config.neighbor_info=dict()
                 
         logger.info("Client {}'s neighbors' indices:".format(rank)) # 打印一下邻居的rank号
@@ -362,9 +333,10 @@ def generate_layers_information(common_config, whole_model=False):
         # 根据layer_info和neighbor_info生成选择层的信息
         _start = 0
         _end = 0
+        num_layers_selected = int(common_config.num_layers * 0.8) # 设置从所有邻居拿去层的总数
         for neighbor_name in neighbor_info.keys():
             # 从优先度高的peer拿优先度更高的层，百分比？向上取整 
-            _end = _start + int(neighbor_info[neighbor_name] * common_config.num_layers) # 邻居的权重越大，拿越重要，越多的层
+            _end = _start + int(neighbor_info[neighbor_name] * num_layers_selected) # 邻居的权重越大，拿越重要，越多的层
             
             _idx = 0
             for layer in layers_info.keys(): # 根据[_start,_end)拿去对应重要性的层
