@@ -86,7 +86,7 @@ def main():
     common_config.para=client_config.para
 
     common_config.window_size = client_config.common_config.window_size
-    common_config.is_whole_model = client_config.common_config.is_whole_model
+    common_config.strategy = client_config.common_config.strategy
     common_config.older_models = Older_Models(window_size=common_config.window_size)
     logger.info("Window Size: {}".format(common_config.older_models.window_size))
  
@@ -170,8 +170,17 @@ def main():
             logger.info("\tNeighbor Rank {}: {}".format(rank, common_config.neighbor_distribution[neighbor_idx]))
 
         # Generate Pulling (layers) information ： 算法的核心就是如何决定层的拉取
-        layers_needed_dict = generate_layers_information(common_config=common_config, whole_model=common_config.is_whole_model)
-        # logger.info("layers_needed_dict = generate_layers_information(common_config=common_config, whole_model=common_config.is_whole_model){}".format(common_config.is_whole_model))
+        if common_config.strategy == 'D-PSGD':
+            # Pulling Whole Model from Every Neighbor
+            layers_needed_dict = generate_layers_information(common_config=common_config, whole_model=True)
+        elif common_config.strategy == 'LFPL':
+            layers_needed_dict = generate_layers_information(common_config=common_config, whole_model=False)
+        elif common_config.strategy == 'NetMax':
+            layers_needed_dict = net_max(common_config=common_config)
+        elif common_config.strategy == 'Rand':
+            layers_needed_dict = rand_layer(common_config=common_config)
+        # TODO 基准算法
+
         logger.info("\nLayer pulling infomation:")
         # logger.info("{}".format(layers_needed_dict))
         for neighbor_idx in layers_needed_dict.keys():
@@ -288,6 +297,44 @@ def main():
             logger.info("The Training and Communicating Time is {}".format(total_computing_timer + total_communication_timer))
             logger.info("The Total Communication Cost is: {} -- {}MB".format(total_communication_cost, total_communication_cost * 4 / 1024 / 1024))
             break
+
+def rand_layer(common_config):
+    # Random pull layers from neighbors to compose a whole model.
+    
+    # Init
+    result = dict()
+    for neighbor_idx in common_config.comm_neighbors:
+        result[neighbor_idx] = list()
+
+    # Generating result
+    for layer in common_config.layer_names:
+        _tmp_neighbor = random.choice(common_config.comm_neighbors)
+        result[_tmp_neighbor].append(layer)
+    return result
+
+def net_max(common_config):
+    # Find the neighbor with Maximum Bandwidth
+    _max_bandwidth = 0
+    _target_neighbor_idx = None
+    for neighbor_idx in common_config.neighbor_bandwidth.keys():
+        cur_neighbor_bandwidth = common_config.neighbor_bandwidth[neighbor_idx]
+        if cur_neighbor_bandwidth > _max_bandwidth:
+            _max_bandwidth = cur_neighbor_bandwidth
+            _target_neighbor_idx = neighbor_idx
+    
+    # Generating pull information --> pull the whole model from the neighbor found above.
+    result = dict()
+    for neighbor_idx in common_config.comm_neighbors:
+        if neighbor_idx == _target_neighbor_idx:
+            result[neighbor_idx] = common_config.layer_names
+        else:
+            result[neighbor_idx] = list()
+    return result
+    
+    
+
+
+
 
 def communication_cost(common_config, layer_info_dict):
     _communication_cost = 0

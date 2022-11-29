@@ -32,7 +32,7 @@ parser.add_argument('--use_cuda', action="store_false", default=True)
 
 # new addition
 parser.add_argument('--window_size', type=int, default=3)
-parser.add_argument('--is_whole_model', type=bool, default=False)
+parser.add_argument('--strategy', type=str, default='D-PSGD')
 
 args = parser.parse_args()
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
@@ -82,8 +82,8 @@ def main():
 
     # new addtion
     common_config.window_size = args.window_size
-    common_config.is_whole_model = args.is_whole_model
-    logger.info("common_config.is_whole_model {}".format(common_config.is_whole_model))
+    common_config.strategy = args.strategy
+    logger.info("common_config.strategy {}".format(common_config.strategy))
 
     global_model = models.create_model_instance(common_config.dataset_type, common_config.model_type)
     init_para = torch.nn.utils.parameters_to_vector(global_model.parameters())
