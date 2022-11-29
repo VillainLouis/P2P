@@ -12,6 +12,7 @@ from training_utils import train, test
 import datasets, models
 from mpi4py import MPI
 import logging
+import copy
 
 parser = argparse.ArgumentParser(description='Distributed Client')
 parser.add_argument('--visible_cuda', type=str, default='-1')
@@ -87,7 +88,7 @@ def main():
     common_config.window_size = client_config.common_config.window_size
     common_config.is_whole_model = client_config.common_config.is_whole_model
     common_config.older_models = Older_Models(window_size=common_config.window_size)
-
+    logger.info("Window Size: {}".format(common_config.older_models.window_size))
  
 
     # 数据分布信息
@@ -101,7 +102,7 @@ def main():
     common_config.tag = 1 # 就是epoch数
 
     # init config
-    logger.info(str(len(client_config.train_data_idxes)))
+    logger.info("Rank {} has {} data samples.".format(rank, str(len(client_config.train_data_idxes))))
     train_dataset, test_dataset = datasets.load_datasets(common_config.dataset_type, common_config.data_path)
     train_loader = datasets.create_dataloaders(train_dataset, batch_size=common_config.batch_size, selected_idxs=client_config.train_data_idxes)
     test_loader = datasets.create_dataloaders(test_dataset, batch_size=16, shuffle=False)
@@ -144,11 +145,11 @@ def main():
         loop.run_until_complete(asyncio.wait(tasks))
         loop.close()
         _timer = time.time() - _timer
-        logger.info("\nLocal Training Complete. \nEpoch {}'s Training Time: {}".format(common_config.tag, _timer)) # 记录当前epoch的训练是时间
+        logger.info("\nLocal Training Complete. \nEpoch {}'s Training Time: {}s".format(common_config.tag, _timer)) # 记录当前epoch的训练是时间
         total_computing_timer += _timer
 
         # 本地训练完成之后，更新存储older_models的滑动窗口
-        common_config.older_models.add_model(dict(common_config.para.named_parameters()))
+        # common_config.older_models.add_model(dict(common_config.para.named_parameters()))
         logger.info("\nCurrent older_models Windows: Size : {}; Index {}".format(common_config.older_models.size, common_config.older_models.index))
 
         
@@ -190,7 +191,7 @@ def main():
         asyncio.set_event_loop(loop)
         tasks = []
 
-        # print(layers_needed_dict) # 打印到终端，方便及时查看全局信息
+        print(layers_needed_dict) # 打印到终端，方便及时查看全局信息
         for i in range(len(common_config.comm_neighbors)):
             nei_rank=common_config.comm_neighbors[i]
             data = layers_needed_dict[nei_rank] # 将layers_needed_dict中的层拉取信息发送给对应邻居，
@@ -261,6 +262,10 @@ def main():
         local_model = aggregate_model_with_dict(local_model, common_config)
         logger.info("Local Aggregation Complete.\n")
 
+        # 滑动窗口存储模型，根据上一轮聚合之后的模型更具有指导意义，不会偏向与自己的数据分布
+        tmp_model = copy.deepcopy(common_config.para)
+        common_config.older_models.add_model(tmp_model.state_dict())
+
         common_config.para=local_model
 
 
@@ -324,6 +329,7 @@ def generate_layers_information(common_config, whole_model=False):
         local_model = common_config.para
         logger.info("Discrepency Information:")
         for layer, paras in local_model.named_parameters():
+            # logger.info("para ?= last_model_dict[layer] -- {}".format(paras == last_model_dict[layer]))
             discrepancy[layer] = torch.norm(paras - last_model_dict[layer])# 利用二范数计算差异值
             logger.info("\tLayer: {} -- {}".format(layer, discrepancy[layer]))
 
@@ -334,10 +340,13 @@ def generate_layers_information(common_config, whole_model=False):
         for layer, paras in local_model.named_parameters():
             denominator = 0
             for i in range(common_config.older_models.size - 1):
+                # logger.info("denominator -- {}".format(denominator))
                 denominator += torch.norm(common_config.older_models.models[(common_config.older_models.index + i)%common_config.older_models.size][layer] - common_config.older_models.models[(common_config.older_models.index + i + 1)%common_config.older_models.size][layer])
             molecule = torch.norm(common_config.older_models.models[common_config.older_models.index][layer] - common_config.older_models.models[(common_config.older_models.index - 1)%common_config.older_models.size][layer])
             learning_speed[layer] = molecule / (_epsilon + denominator)
-            logger.info("\tLayer: {} -- {}".format(learning_speed[layer]))
+            # logger.info("\tmolecule: {}".format(molecule))
+            # logger.info("\tdenominator: {}".format(denominator))
+            logger.info("\tLayer: {} -- {}".format(layer, learning_speed[layer]))
         # 差异和学习速度各占0.5的权重
         priority = dict()
         for layer in discrepancy.keys():
@@ -514,6 +523,24 @@ def aggregate_model_with_dict(local_model, common_config):
     for neighbor_name in common_config.comm_neighbors:
         # print("neighbor name: {}".format(neighbor_name))
         local_blocks_dicts.append(common_config.neighbor_paras[neighbor_name])
+            
+    # logger.info("common_config.neighbors:")
+    # for neighbor_name in common_config.comm_neighbors:
+    #     first = True
+    #     for layer_name in common_config.layer_names:
+    #         # logger.info(common_config.neighbor_paras.keys())
+    #         if layer_name in common_config.neighbor_paras[neighbor_name]:
+    #             if first:
+    #                 first = False
+    #                 logger.info("\tNeighbor index: {}".format(neighbor_name))
+    #             logger.info("\t\tLayer {}: -- {}".format(layer_name, common_config.neighbor_paras[neighbor_name][layer_name].view(-1).size()[0]))
+    # logger.info("End common_config.neighbors.")
+
+
+    # logger.info("local_block_dicts:")
+
+
+
     dict_keys = common_config.layer_names
 
     updated_para_dict = dict()
