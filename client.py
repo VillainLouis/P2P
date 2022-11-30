@@ -13,6 +13,8 @@ import datasets, models
 from mpi4py import MPI
 import logging
 import copy
+import numpy as np
+import threading
 
 parser = argparse.ArgumentParser(description='Distributed Client')
 parser.add_argument('--visible_cuda', type=str, default='-1')
@@ -127,9 +129,91 @@ def main():
     logger.info(str(common_config.__dict__))
 
 
+    class get_Thread(threading.Thread):
+        def __init__(self,comm, common_config, client_rank, type):
+            threading.Thread.__init__(self)
+            self.comm=comm
+            self.common_config=common_config
+            self.client_rank=client_rank
+            self.type=type
+        def run(self):
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            tasks = []
+            if self.type == 'info': # 层拉取信息
+                tasks.append(
+                    asyncio.ensure_future(
+                        get_info(self.comm,self.common_config,self.client_rank, epoch_idx=common_config.tag)
+                    )
+                )
+            elif self.type == 'para': # 层参数信息
+                tasks.append(
+                    asyncio.ensure_future(
+                        get_para(self.comm,self.common_config,self.client_rank)
+                    )
+                )
+            loop.run_until_complete(asyncio.wait(tasks))
+
+            loop.close()
+    mutex = threading.Lock()
+
+    async def get_info(comm, common_config, rank, epoch_idx):
+        # print("get_data")
+        # logger.info("get_data")
+        logger.info("\tClient Rank {} Getting Layer Information from Client Rank {}".format(comm.Get_rank(), rank))
+        received_para = await get_data(comm, rank, epoch_idx)
+        mutex.acquire()
+        common_config.neighbor_info[rank] = received_para
+        common_config.len_neighbor_received += 1
+        # common_config.neighbor_received_flag[rank] = True
+        mutex.release()
+
+
+    async def get_para(comm, common_config, rank):
+    # print("get_data")
+        # while True:
+        logger.info("\tClient Rank {} Getting Parameters from Client Rank {}".format(comm.Get_rank(), rank))
+        received_para = await get_data(comm, rank, common_config.tag)
+        mutex.acquire()
+        common_config.neighbor_paras[rank] = received_para
+        common_config.len_neighbor_received += 1
+        # common_config.neighbor_received_flag[rank] = True
+        mutex.release()
+
+    class send_Thread(threading.Thread):
+        def __init__(self,comm, data, common_config, client_rank):
+            threading.Thread.__init__(self)
+            self.comm=comm
+            self.data=data
+            self.common_config=common_config
+            self.client_rank=client_rank
+        def run(self):
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            tasks = []
+            tasks.append(
+                asyncio.ensure_future(
+                    send_para(self.comm,self.data,self.common_config,self.client_rank)
+                )
+            )
+            loop.run_until_complete(asyncio.wait(tasks))
+
+            loop.close()
+    async def send_para(comm, data, common_config, rank):
+    # print("get_data")
+        # while True:
+        # logger.info("send_data")
+        # print("send rank {}, get rank {}".format(comm.Get_rank(), rank))
+        logger.info("\tClient Rank {} Sending paras to Client Rank {}".format(comm.Get_rank(), rank))
+        # print("get rank: ", rank)
+        await send_data(comm, data, rank, common_config.tag)
+
+
+
     total_computing_timer = 0 # 记录训练时间
     total_communication_timer = 0 # 利用模拟的带宽计算，不是实际的网络情况
     total_communication_cost = 0
+
 
     while True:
         # Start local Training
@@ -145,8 +229,9 @@ def main():
         loop.run_until_complete(asyncio.wait(tasks))
         loop.close()
         _timer = time.time() - _timer
-        logger.info("\nLocal Training Complete. \nEpoch {}'s Training Time: {}s".format(common_config.tag, _timer)) # 记录当前epoch的训练是时间
         total_computing_timer += _timer
+        logger.info("\nLocal Training Complete. \nEpoch {}'s Training Time: {}s".format(common_config.tag, _timer)) # 记录当前epoch的训练是时间
+        logger.info("\nCurrent total time is: {}".format(total_communication_timer + total_computing_timer)) # 当前总时间：本地训练加通信
 
         # 本地训练完成之后，更新存储older_models的滑动窗口
         # common_config.older_models.add_model(dict(common_config.para.named_parameters()))
@@ -160,7 +245,9 @@ def main():
         # 模拟网络带宽，在一定范围内随机带宽
         logger.info("\nCurrent neighbors' Bandwidth information:")
         for neighbor_idx in common_config.comm_neighbors:
-            common_config.neighbor_bandwidth[neighbor_idx] = random.randint(10, 20) # 模拟网络波动的范围是10到20内，用于选择peer
+            _rand_bandwidth = random.gauss(10 + (rank%10), 5)
+            _rand_bandwidth = max(_rand_bandwidth, -_rand_bandwidth)
+            common_config.neighbor_bandwidth[neighbor_idx] = _rand_bandwidth # 模拟网络波动的范围是10到20内，用于选择peer
             logger.info("\tNeighbor Rank: {}: {}MBps".format(neighbor_idx, common_config.neighbor_bandwidth[neighbor_idx]))
 
         # 计算与邻居的数据分布差异 neighbor_distribution存的就是差异，直接用就可以
@@ -193,34 +280,59 @@ def main():
         total_communication_timer += _communication_time
         total_communication_cost += _communication_cost
 
+        # # Tell neighbors: Layers needed from corresponding neighbors --> 存储在 common_config.neighbor_info=dict()
+        # logger.info("\n")
+        # logger.info("Sending/getting information to/from its neighbors")
+        # loop = asyncio.new_event_loop()
+        # asyncio.set_event_loop(loop)
+        # tasks = []
+
+        # print(layers_needed_dict) # 打印到终端，方便及时查看全局信息
+        # for i in range(len(common_config.comm_neighbors)):
+        #     nei_rank=common_config.comm_neighbors[i]
+        #     data = layers_needed_dict[nei_rank] # 将layers_needed_dict中的层拉取信息发送给对应邻居，
+        #                                             # 即layers_needed_dict[neighbor_idx]发送给rank=neighbor_idx的邻居
+
+        #     if nei_rank > rank:
+        #         task = asyncio.ensure_future(send_para(comm, data, nei_rank, common_config.tag))
+        #         tasks.append(task)
+        #         # print("worker send")
+        #         task = asyncio.ensure_future(get_info(comm, common_config, nei_rank, common_config.tag))
+        #         tasks.append(task)
+        #     else:
+        #         task = asyncio.ensure_future(get_info(comm, common_config, nei_rank, common_config.tag))
+        #         tasks.append(task)
+        #         # print("worker send")
+        #         task = asyncio.ensure_future(send_para(comm, data, nei_rank, common_config.tag))
+        #         tasks.append(task)
+        # loop.run_until_complete(asyncio.wait(tasks))
+        # loop.close()
+        # logger.info("Sending/getting information complete")
+
         # Tell neighbors: Layers needed from corresponding neighbors --> 存储在 common_config.neighbor_info=dict()
         logger.info("\n")
         logger.info("Sending/getting information to/from its neighbors")
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        tasks = []
-
         print(layers_needed_dict) # 打印到终端，方便及时查看全局信息
         for i in range(len(common_config.comm_neighbors)):
             nei_rank=common_config.comm_neighbors[i]
             data = layers_needed_dict[nei_rank] # 将layers_needed_dict中的层拉取信息发送给对应邻居，
                                                     # 即layers_needed_dict[neighbor_idx]发送给rank=neighbor_idx的邻居
-
-            if nei_rank > rank:
-                task = asyncio.ensure_future(send_para(comm, data, nei_rank, common_config.tag))
-                tasks.append(task)
-                # print("worker send")
-                task = asyncio.ensure_future(get_info(comm, common_config, nei_rank, common_config.tag))
-                tasks.append(task)
-            else:
-                task = asyncio.ensure_future(get_info(comm, common_config, nei_rank, common_config.tag))
-                tasks.append(task)
-                # print("worker send")
-                task = asyncio.ensure_future(send_para(comm, data, nei_rank, common_config.tag))
-                tasks.append(task)
-        loop.run_until_complete(asyncio.wait(tasks))
-        loop.close()
+            send_T=send_Thread(comm, data,common_config, nei_rank)
+            send_T.start()
+            get_T=get_Thread(comm, common_config, nei_rank, type='info')
+            get_T.start()
+        
+        while True:
+            mutex.acquire()
+            sss=common_config.len_neighbor_received
+            mutex.release()
+            if sss==len(common_config.comm_neighbors):
+                break
+        common_config.len_neighbor_received=0
         logger.info("Sending/getting information complete")
+
+
+
 
         
         # Sending/Get parameters: Get layers parameters from neighbors --> 根据common_config.neighbor_info=dict()，将本地模型的对应层发给邻居
@@ -234,31 +346,52 @@ def main():
         #     logger.info("\t{}".format(layers_sending_dict[neighbor_idx].keys()))
 
 
-        logger.info("\n")
-        logger.info("Sending/getting parameters to/from its neighbors")
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        tasks = []
+        # logger.info("\n")
+        # logger.info("Sending/getting parameters to/from its neighbors")
+        # loop = asyncio.new_event_loop()
+        # asyncio.set_event_loop(loop)
+        # tasks = []
+        # for i in range(len(common_config.comm_neighbors)):
+        #     nei_rank=common_config.comm_neighbors[i]
+        #     data = layers_sending_dict[nei_rank]
+        #     # logger.info("Client {}'s neighbors:{}".format(rank, common_config.comm_neighbors[i]))
+
+        #     if nei_rank > rank:
+        #         task = asyncio.ensure_future(send_para(comm, data, nei_rank, common_config.tag))
+        #         tasks.append(task)
+        #         # print("worker send")
+        #         task = asyncio.ensure_future(get_para(comm, common_config, nei_rank, common_config.tag))
+        #         tasks.append(task)
+        #     else:
+        #         task = asyncio.ensure_future(get_para(comm, common_config, nei_rank, common_config.tag))
+        #         tasks.append(task)
+        #         # print("worker send")
+        #         task = asyncio.ensure_future(send_para(comm, data, nei_rank, common_config.tag))
+        #         tasks.append(task)
+        # loop.run_until_complete(asyncio.wait(tasks))
+        # loop.close()
+        # logger.info("Sending/getting parameters complete\n")
+
+        
+        logger.info("\nSending/getting parameters to/from its neighbors")
         for i in range(len(common_config.comm_neighbors)):
             nei_rank=common_config.comm_neighbors[i]
-            data = layers_sending_dict[nei_rank]
-            # logger.info("Client {}'s neighbors:{}".format(rank, common_config.comm_neighbors[i]))
-
-            if nei_rank > rank:
-                task = asyncio.ensure_future(send_para(comm, data, nei_rank, common_config.tag))
-                tasks.append(task)
-                # print("worker send")
-                task = asyncio.ensure_future(get_para(comm, common_config, nei_rank, common_config.tag))
-                tasks.append(task)
-            else:
-                task = asyncio.ensure_future(get_para(comm, common_config, nei_rank, common_config.tag))
-                tasks.append(task)
-                # print("worker send")
-                task = asyncio.ensure_future(send_para(comm, data, nei_rank, common_config.tag))
-                tasks.append(task)
-        loop.run_until_complete(asyncio.wait(tasks))
-        loop.close()
+            data = layers_sending_dict[nei_rank] # 将layers_needed_dict中的层拉取信息发送给对应邻居，
+                                                    # 即layers_needed_dict[neighbor_idx]发送给rank=neighbor_idx的邻居
+            send_T=send_Thread(comm, data,common_config, nei_rank)
+            send_T.start()
+            get_T=get_Thread(comm, common_config, nei_rank, type='para')
+            get_T.start()
+        
+        while True:
+            mutex.acquire()
+            sss=common_config.len_neighbor_received
+            mutex.release()
+            if sss==len(common_config.comm_neighbors):
+                break
+        common_config.len_neighbor_received=0
         logger.info("Sending/getting parameters complete\n")
+
 
         logger.info("\nReceived Neighbor's Layers:")
         for neighbor_idx in common_config.neighbor_paras.keys():
@@ -295,7 +428,7 @@ def main():
             logger.info("The Training Time is {}".format(total_computing_timer))
             logger.info("THe Commnunication Time is {}".format(total_communication_timer))
             logger.info("The Training and Communicating Time is {}".format(total_computing_timer + total_communication_timer))
-            logger.info("The Total Communication Cost is: {} -- {}MB".format(total_communication_cost, total_communication_cost * 4 / 1024 / 1024))
+            logger.info("The Total Communication Cost is: {}MB".format(total_communication_cost))
             break
 
 def rand_layer(common_config):
@@ -451,21 +584,42 @@ def generate_layers_information(common_config, whole_model=False):
         for neighbor_idx in neighbor_info:
             neighbor_info[neighbor_idx] /= temp_value_for_normalize
             result[neighbor_idx] = list() # 顺便初始化
+        
         # 根据layer_info和neighbor_info生成选择层的信息
-        _start = 0
-        _end = 0
-        num_layers_selected = int(common_config.num_layers * 1) # 设置从所有邻居拿去层的总数
-        for neighbor_name in neighbor_info.keys():
-            # 从优先度高的peer拿优先度更高的层，百分比？向上取整 
-            _end = _start + int(neighbor_info[neighbor_name] * num_layers_selected) # 邻居的权重越大，拿越重要，越多的层
-            
-            _idx = 0
-            for layer in layers_info.keys(): # 根据[_start,_end)拿去对应重要性的层
-                if _idx >= _start and _idx < _end:
-                    result[neighbor_name].append(layer)
-                _idx += 1
+        select = 2
+        # 方案1：手动将优先级高的layer映射到优先级高的neighbor
+        if select == 1:
+            _start = 0
+            _end = 0
+            num_layers_selected = int(common_config.num_layers * 1) # 设置从所有邻居拿去层的总数
+            for neighbor_name in neighbor_info.keys():
+                # 从优先度高的peer拿优先度更高的层，百分比？向上取整 
+                _end = _start + int(neighbor_info[neighbor_name] * num_layers_selected) # 邻居的权重越大，拿越重要，越多的层
+                
+                _idx = 0
+                for layer in layers_info.keys(): # 根据[_start,_end)拿去对应重要性的层
+                    if _idx >= _start and _idx < _end:
+                        result[neighbor_name].append(layer)
+                    _idx += 1
 
-            _start = _end
+                _start = _end
+
+        # 方案2：以邻居的权重为概率，将层按照概率映射到邻居
+        elif select == 2:
+            _neighbors_list = list()
+            _neighbors_probability = list()
+            for neighbor_idx in neighbor_info:
+                _neighbors_list.append(neighbor_idx)
+                _neighbors_probability.append(neighbor_info[neighbor_idx])
+            # 让概率和为1
+            _sum = sum(_neighbors_probability)
+            _rand_neighb_idx = random.choice(list(range(len(_neighbors_probability))))
+            _neighbors_probability[_rand_neighb_idx] = _neighbors_probability[_rand_neighb_idx] - (_sum - 1.0)
+            
+            _neighbors_probability = np.array(_neighbors_probability)
+            for layer in common_config.layer_names:
+                _sample_neighbor = np.random.choice(_neighbors_list, p=_neighbors_probability.ravel())
+                result[_sample_neighbor].append(layer)
     else:
         for neighbor_idx in common_config.comm_neighbors:
             result[neighbor_idx] = common_config.layer_names

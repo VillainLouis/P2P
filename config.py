@@ -49,6 +49,7 @@ class CommonConfig:
         self.partition_sizes=None
         self.layer_names=list()
         self.layer_num_parameters=dict() # 记录模型每一层的参数量
+        self.len_neighbor_received=0
 
 # 定义Older_Models类，用于记录之前的模型参数，不足窗口大小的时候不会滑动
 class Older_Models():

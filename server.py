@@ -33,6 +33,8 @@ parser.add_argument('--use_cuda', action="store_false", default=True)
 # new addition
 parser.add_argument('--window_size', type=int, default=3)
 parser.add_argument('--strategy', type=str, default='D-PSGD')
+parser.add_argument('--topology', type=str, default='ring')
+
 
 args = parser.parse_args()
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
@@ -125,13 +127,19 @@ def main():
 
     # Generating Topology
     adjacency_matrix = np.zeros((worker_num, worker_num), dtype=np.int)
-    for worker_idx in range(worker_num):
-        adjacency_matrix[worker_idx][worker_idx-1] = 1
-        adjacency_matrix[worker_idx][(worker_idx+1)%worker_num] = 1
-    # for worker_idx1 in range(worker_num):
-    #     for worker_idx2 in range(worker_num):
-    #         if worker_idx1!=worker_idx2:
-    #             adjacency_matrix[worker_idx1][worker_idx2] = 1
+
+    # Ring
+    if args.topology == 'ring':
+        for worker_idx in range(worker_num):
+            adjacency_matrix[worker_idx][worker_idx-1] = 1
+            adjacency_matrix[worker_idx][(worker_idx+1)%worker_num] = 1
+    elif args.topology == 'allconnected':
+        for worker_idx1 in range(worker_num):
+            for worker_idx2 in range(worker_num):
+                if worker_idx1!=worker_idx2:
+                    adjacency_matrix[worker_idx1][worker_idx2] = 1
+    # elif args.topology == 'degree':
+
     topology=adjacency_matrix
     logging.info("Current Topology: \n{}".format(topology))
     print(topology)
