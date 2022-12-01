@@ -232,7 +232,7 @@ def main():
         _timer = time.time() - _timer
         total_computing_timer += _timer
         logger.info("\nLocal Training Complete. \nEpoch {}'s Training Time: {}s".format(common_config.tag, _timer)) # 记录当前epoch的训练是时间
-        logger.info("\nCurrent total time (local training + communication + aggregation) is: ".format(total_communication_timer + total_computing_timer + total_aggregation_timer)) # 当前总时间：本地训练加通信
+        logger.info("\nCurrent total time (local training + communication + aggregation) is: {}".format(total_communication_timer + total_computing_timer + total_aggregation_timer)) # 当前总时间：本地训练加通信
 
         # 本地训练完成之后，更新存储older_models的滑动窗口
         # common_config.older_models.add_model(dict(common_config.para.named_parameters()))
@@ -252,6 +252,7 @@ def main():
             logger.info("\tNeighbor Rank: {}: {}MBps".format(neighbor_idx, common_config.neighbor_bandwidth[neighbor_idx]))
 
         # 计算与邻居的数据分布差异 neighbor_distribution存的就是差异，直接用就可以
+        # TODO 修改计算差异为cosine方式
         logger.info("\nCurrent client {}'s distribution discrepancies of its neighbors:".format(rank))
         for neighbor_idx in common_config.comm_neighbors:
             common_config.neighbor_distribution[neighbor_idx] = torch.norm(torch.from_numpy(common_config.partition_sizes[neighbor_idx - 1] - common_config.partition_sizes[rank - 1]))
@@ -538,7 +539,7 @@ def generate_layers_information(common_config, whole_model=False):
         # 差异和学习速度各占0.5的权重
         priority = dict()
         for layer in discrepancy.keys():
-            priority[layer] = discrepancy[layer] * 0.5 + learning_speed[layer] * 0.5
+            priority[layer] = discrepancy[layer] * 0.1 + learning_speed[layer] * 0.9
         logger.info("Exit layer_selector")
         return sorted_dict(priority)
 
@@ -625,7 +626,12 @@ def generate_layers_information(common_config, whole_model=False):
             _neighbors_probability[_rand_neighb_idx] = _neighbors_probability[_rand_neighb_idx] - (_sum - 1.0)
             
             _neighbors_probability = np.array(_neighbors_probability)
+            
             for layer in common_config.layer_names:
+                _sample_neighbor = np.random.choice(_neighbors_list, p=_neighbors_probability.ravel())
+                result[_sample_neighbor].append(layer)
+                _sample_neighbor = np.random.choice(_neighbors_list, p=_neighbors_probability.ravel())
+                result[_sample_neighbor].append(layer)
                 _sample_neighbor = np.random.choice(_neighbors_list, p=_neighbors_probability.ravel())
                 result[_sample_neighbor].append(layer)
     else:

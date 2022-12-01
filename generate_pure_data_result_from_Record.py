@@ -15,7 +15,7 @@ def record2txt(record_path):
                 # Init logger
             filename = server_log_path.split('.')[0] + '.txt' # 与记录同名的.txt文件
             if not os.path.exists(filename): # 只有记录文件不存在的时候才进行操作
-                logger = logging.getLogger(os.path.basename(__file__).split('.')[0])
+                logger = logging.getLogger(filename)
                 logger.setLevel(logging.INFO)
                 fileHandler = logging.FileHandler(filename=filename)
                 formatter = logging.Formatter("%(message)s")

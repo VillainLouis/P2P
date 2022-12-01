@@ -217,12 +217,20 @@ def update_client_neighbors(topology, worker_list):
 
 
 def non_iid_partition(ratio, train_class_num, worker_num):
+    # 用于数据的
     partition_sizes = np.ones((train_class_num, worker_num)) * ((1 - ratio) / (worker_num-1))
 
     for i in range(train_class_num):
         partition_sizes[i][i%worker_num]=ratio
 
-    return partition_sizes
+    # 转置后用于client计算分布差
+    c_partition_sizes = np.ones((worker_num, train_class_num))
+
+    for i in range(worker_num):
+        for j in range(train_class_num):
+            c_partition_sizes[i][j]=partition_sizes[j][i]
+
+    return partition_sizes, c_partition_sizes
 
 def partition_data(dataset_type, data_pattern, worker_num=10):
     train_dataset, _ = datasets.load_datasets(dataset_type=dataset_type,data_path=args.data_path)
@@ -233,50 +241,51 @@ def partition_data(dataset_type, data_pattern, worker_num=10):
             partition_sizes = np.ones((train_class_num, worker_num)) * (1.0 / worker_num)
         elif data_pattern == 1:
             non_iid_ratio = 0.2
-            partition_sizes = non_iid_partition(non_iid_ratio,train_class_num,worker_num)
+            partition_sizes, c_partition_sizes = non_iid_partition(non_iid_ratio,train_class_num,worker_num)
         elif data_pattern == 2:
             non_iid_ratio = 0.4
-            partition_sizes = non_iid_partition(non_iid_ratio,train_class_num,worker_num)
+            partition_sizes, c_partition_sizes = non_iid_partition(non_iid_ratio,train_class_num,worker_num)
         elif data_pattern == 3:
             non_iid_ratio = 0.6
-            partition_sizes = non_iid_partition(non_iid_ratio,train_class_num,worker_num)
+            partition_sizes, c_partition_sizes = non_iid_partition(non_iid_ratio,train_class_num,worker_num)
         elif data_pattern == 4:
             non_iid_ratio = 0.8
-            partition_sizes = non_iid_partition(non_iid_ratio,train_class_num,worker_num)
+            partition_sizes, c_partition_sizes = non_iid_partition(non_iid_ratio,train_class_num,worker_num)
     elif dataset_type == "EMNIST":
         train_class_num=62
         if data_pattern == 0:
             partition_sizes = np.ones((train_class_num, worker_num)) * (1.0 / worker_num)
         elif data_pattern == 1:
             non_iid_ratio = 0.2
-            partition_sizes = non_iid_partition(non_iid_ratio,train_class_num,worker_num)
+            partition_sizes, c_partition_sizes = non_iid_partition(non_iid_ratio,train_class_num,worker_num)
         elif data_pattern == 2:
             non_iid_ratio = 0.4
-            partition_sizes = non_iid_partition(non_iid_ratio,train_class_num,worker_num)
+            partition_sizes, c_partition_sizes = non_iid_partition(non_iid_ratio,train_class_num,worker_num)
         elif data_pattern == 3:
             non_iid_ratio = 0.6
-            partition_sizes = non_iid_partition(non_iid_ratio,train_class_num,worker_num)
+            partition_sizes, c_partition_sizes = non_iid_partition(non_iid_ratio,train_class_num,worker_num)
         elif data_pattern == 4:
             non_iid_ratio = 0.8
-            partition_sizes = non_iid_partition(non_iid_ratio,train_class_num,worker_num)
+            partition_sizes, c_partition_sizes = non_iid_partition(non_iid_ratio,train_class_num,worker_num)
     if dataset_type == "CIFAR100" or dataset_type == "image100":
         train_class_num=100
         if data_pattern == 0:
             partition_sizes = np.ones((train_class_num, worker_num)) * (1.0 / worker_num)
         elif data_pattern == 1:
             non_iid_ratio = 0.2
-            partition_sizes = non_iid_partition(non_iid_ratio,train_class_num,worker_num)
+            partition_sizes, c_partition_sizes = non_iid_partition(non_iid_ratio,train_class_num,worker_num)
         elif data_pattern == 2:
             non_iid_ratio = 0.4
-            partition_sizes = non_iid_partition(non_iid_ratio,train_class_num,worker_num)
+            partition_sizes, c_partition_sizes = non_iid_partition(non_iid_ratio,train_class_num,worker_num)
         elif data_pattern == 3:
             non_iid_ratio = 0.6
-            partition_sizes = non_iid_partition(non_iid_ratio,train_class_num,worker_num)
+            partition_sizes, c_partition_sizes = non_iid_partition(non_iid_ratio,train_class_num,worker_num)
         elif data_pattern == 4:
             non_iid_ratio = 0.8
-            partition_sizes = non_iid_partition(non_iid_ratio,train_class_num,worker_num)
+            partition_sizes, c_partition_sizes = non_iid_partition(non_iid_ratio,train_class_num,worker_num)
     train_data_partition = datasets.LabelwisePartitioner(train_dataset, partition_sizes=partition_sizes)
-    return train_data_partition, partition_sizes
+    
+    return train_data_partition, c_partition_sizes
 
 if __name__ == "__main__":
     main()
