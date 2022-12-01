@@ -1,3 +1,4 @@
+from mpi4py import MPI
 import os
 import argparse
 import asyncio
@@ -10,7 +11,7 @@ import torch.nn.functional as F
 import datasets, models
 from training_utils import test
 
-from mpi4py import MPI
+
 
 import logging
 

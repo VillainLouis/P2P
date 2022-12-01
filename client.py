@@ -1,3 +1,4 @@
+from mpi4py import MPI
 import os
 import time
 import argparse
@@ -10,7 +11,7 @@ from config import ClientConfig, CommonConfig, Older_Models
 from comm_utils import *
 from training_utils import train, test
 import datasets, models
-from mpi4py import MPI
+
 import logging
 import copy
 import numpy as np
