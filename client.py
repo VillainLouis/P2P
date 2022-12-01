@@ -213,7 +213,7 @@ def main():
     total_computing_timer = 0 # 记录训练时间
     total_communication_timer = 0 # 利用模拟的带宽计算，不是实际的网络情况
     total_communication_cost = 0
-
+    total_aggregation_timer = 0
 
     while True:
         # Start local Training
@@ -231,7 +231,7 @@ def main():
         _timer = time.time() - _timer
         total_computing_timer += _timer
         logger.info("\nLocal Training Complete. \nEpoch {}'s Training Time: {}s".format(common_config.tag, _timer)) # 记录当前epoch的训练是时间
-        logger.info("\nCurrent total time is: {}".format(total_communication_timer + total_computing_timer)) # 当前总时间：本地训练加通信
+        logger.info("\nCurrent total time (local training + communication + aggregation) is: ".format(total_communication_timer + total_computing_timer + total_aggregation_timer)) # 当前总时间：本地训练加通信
 
         # 本地训练完成之后，更新存储older_models的滑动窗口
         # common_config.older_models.add_model(dict(common_config.para.named_parameters()))
@@ -401,7 +401,11 @@ def main():
         # local_para = aggregate_model(local_para, common_config)
         # torch.nn.utils.vector_to_parameters(local_para, local_model.parameters())
         logger.info("\nLocal Model Aggregating...")
+        _timer = time.time()
         local_model = aggregate_model_with_dict(local_model, common_config)
+        _timer = time.time() - _timer
+        logger.info("Current Epoch Aggregation Time: {}".format(_timer))
+        total_aggregation_timer += _timer
         logger.info("Local Aggregation Complete.\n")
 
         # 滑动窗口存储模型，根据上一轮聚合之后的模型更具有指导意义，不会偏向与自己的数据分布
@@ -476,8 +480,11 @@ def communication_cost(common_config, layer_info_dict):
             _communication_cost += common_config.layer_num_parameters[layer_name] * 4 / 1024 / 1024
     _communication_time = 0.0
     for neighbor_idx in layer_info_dict.keys():
+        _tmp_time = 0.0
         for layer_name in layer_info_dict[neighbor_idx]:
-            _communication_time += common_config.layer_num_parameters[layer_name] * 4 / 1024 / 1024 / common_config.neighbor_bandwidth[neighbor_idx]
+            _tmp_time += common_config.layer_num_parameters[layer_name] * 4 / 1024 / 1024 / common_config.neighbor_bandwidth[neighbor_idx]
+        if _tmp_time > _communication_time:
+            _communication_time = _tmp_time
     return _communication_cost, _communication_time
 
 

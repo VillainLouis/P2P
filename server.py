@@ -165,6 +165,7 @@ def main():
         avg_train_loss /= worker_num
         print("Epoch: {}, average accuracy: {}, average test_loss: {}, average train_loss: {}\n".format(epoch_idx, avg_acc, avg_test_loss, avg_train_loss))
         logger.info("Epoch: {}, average accuracy: {}, average test_loss: {}, average train_loss: {}\n".format(epoch_idx, avg_acc, avg_test_loss, avg_train_loss))
+        logger.info("Current Time: {}".format(time.time()))
 
         logging.info(topology)
         # print(topology)
