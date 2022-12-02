@@ -256,7 +256,7 @@ def main():
         logger.info("\nCurrent client {}'s distribution discrepancies of its neighbors:".format(rank))
         for neighbor_idx in common_config.comm_neighbors:
             common_config.neighbor_distribution[neighbor_idx] = torch.norm(torch.from_numpy(common_config.partition_sizes[neighbor_idx - 1] - common_config.partition_sizes[rank - 1]))
-            logger.info("\tNeighbor Rank {}: {}".format(rank, common_config.neighbor_distribution[neighbor_idx]))
+            logger.info("\tNeighbor Rank {}: {}".format(neighbor_idx, common_config.neighbor_distribution[neighbor_idx]))
 
         # Generate Pulling (layers) information ： 算法的核心就是如何决定层的拉取
         if common_config.strategy == 'D-PSGD':
@@ -627,13 +627,11 @@ def generate_layers_information(common_config, whole_model=False):
             
             _neighbors_probability = np.array(_neighbors_probability)
             
+            _mapping_model_number = int(len(common_config.comm_neighbors) / 2)
             for layer in common_config.layer_names:
-                _sample_neighbor = np.random.choice(_neighbors_list, p=_neighbors_probability.ravel())
-                result[_sample_neighbor].append(layer)
-                _sample_neighbor = np.random.choice(_neighbors_list, p=_neighbors_probability.ravel())
-                result[_sample_neighbor].append(layer)
-                _sample_neighbor = np.random.choice(_neighbors_list, p=_neighbors_probability.ravel())
-                result[_sample_neighbor].append(layer)
+                for i in range(_mapping_model_number):
+                    _sample_neighbor = np.random.choice(_neighbors_list, p=_neighbors_probability.ravel())
+                    result[_sample_neighbor].append(layer)
     else:
         for neighbor_idx in common_config.comm_neighbors:
             result[neighbor_idx] = common_config.layer_names
